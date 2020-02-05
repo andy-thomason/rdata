@@ -1,6 +1,6 @@
+use num_traits::FromPrimitive;
 use std::io::Read;
 use std::rc::Rc;
-use num_traits::FromPrimitive;
 
 // see https://github.com/wch/r-source/blob/trunk/src/include/Rinternals.h
 // http://www.maths.lth.se/matstat/staff/nader/stint/R_Manuals/R-ints.pdf
@@ -18,10 +18,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Extras {
-    // Symbol "x"
+    // Symbol eg. "x"
     tag: Object,
 
-    // List of attributes
+    // List of attributes eg. {"x": 1, "y": 2}
     attr: Object,
 
     //
@@ -168,6 +168,14 @@ impl Object {
         Object::null()
     }
 
+    pub fn lang(vals: Vec<Object>) -> Self {
+        Object::LANGSXP(None, Rc::new(List::from_slice(vals.as_slice())))
+    }
+
+    pub fn expr(vals: Vec<Object>) -> Self {
+        Object::EXPRSXP(None, vals)
+    }
+
     pub fn extras_mut(&mut self) -> &mut Obe {
         match self {
             Object::SYMSXP(ref mut obe, _)
@@ -263,7 +271,7 @@ impl Object {
 
     pub fn data_frame(columns: Vec<Object>, names: Vec<&str>) -> Self {
         let cmax = columns.iter().map(|c| c.len()).max().unwrap_or(1);
-        let n : i32 = i32::from_usize(cmax).unwrap_or(1);
+        let n: i32 = i32::from_usize(cmax).unwrap_or(1);
         let mut res = Object::vec(columns);
         res.add_attr("class", Object::strings(vec!["data.frame"]));
         res.add_attr("row.names", Object::integer(vec![-2147483648, -(n as i32)]));
@@ -282,7 +290,7 @@ impl Object {
             Object::VECSXP(_, vec) => vec.len(),
             Object::EXPRSXP(_, vec) => vec.len(),
             Object::RAWSXP(_, vec) => vec.len(),
-            _ => 0
+            _ => 0,
         }
     }
 }
@@ -848,14 +856,34 @@ mod tests {
         let obj = read_ascii("A 2 197636 131840 6 1 262153 1 + 2 1 262153 1 x 2 14 1 1 254");
         assert_eq!(
             obj,
-            LANGSXP(
-                None,
-                Rc::new(List::from_slice(&[
-                    Object::sym("+"),
-                    Object::sym("x"),
-                    Object::real(vec![1.])
-                ]))
-            )
+            Object::lang(vec![
+                Object::sym("+"),
+                Object::sym("x"),
+                Object::real(vec![1.])
+            ])
+        );
+    }
+
+    #[test]
+    fn call_sin_pi() {
+        let obj = read_ascii("A 2 197636 131840 6 1 262153 3 sin 2 1 262153 2 pi 254");
+        assert_eq!(
+            obj,
+            Object::lang(vec![Object::sym("sin"), Object::sym("pi")])
+        );
+    }
+
+    #[test]
+    fn assign() {
+        let obj = read_ascii("A 2 197636 131840 6 1 262153 2 <- 2 1 262153 1 x 2 14 1 1 254");
+        println!("{:?}", obj);
+        assert_eq!(
+            obj,
+            Object::lang(vec![
+                Object::sym("<-"),
+                Object::sym("x"),
+                Object::real(vec![1.])
+            ])
         );
     }
 
@@ -918,21 +946,46 @@ mod tests {
 
     #[test]
     fn data_frame() {
+        // data.frame(a=1, b=2)
         let obj = read_ascii(
             r#"A 2 197636 131840 787 2 14 1 1 14 1 2 1026 1 262153 5 names 16 2 262153 1 a 262153 1 b 1026 1 262153 9 row.names 13 2 NA -1 1026 1 262153 5 class 16 1 262153 10 data.frame 254"#,
         );
         let cmp = Object::data_frame(
             vec![Object::real(vec![1.]), Object::real(vec![2.])],
-            vec!["a", "b"]
+            vec!["a", "b"],
         );
         assert_eq!(obj, cmp);
     }
 
     #[test]
     fn builtin() {
-        let obj = read_ascii(r#"A 2 197636 131840 8 1 c"#);
+        // c
+        let obj = read_ascii("A 2 197636 131840 8 1 c");
         println!("{:?}", obj);
         assert_eq!(obj, BUILTINSXP(None, "c".to_string()));
+    }
+
+    #[test]
+    fn special() {
+        // `<-`
+        let obj = read_ascii("A 2 197636 131840 7 2 <-");
+        println!("{:?}", obj);
+        assert_eq!(obj, SPECIALSXP(None, "<-".to_string()));
+    }
+
+    #[test]
+    fn expression() {
+        // expression(1+1)
+        let obj = read_ascii("A 2 197636 131840 20 1 6 1 262153 1 + 2 14 1 1 2 14 1 1 254");
+        println!("{:?}", obj);
+        assert_eq!(
+            obj,
+            Object::expr(vec![Object::lang(vec![
+                Object::sym("+"),
+                Object::real(vec![1.]),
+                Object::real(vec![1.])
+            ])])
+        );
     }
 
     // #[test]
