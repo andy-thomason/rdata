@@ -33,6 +33,7 @@ pub struct Extras {
 
 #[derive(PartialEq, Debug, Clone)]
 /// See https://en.wikipedia.org/wiki/CAR_and_CDR
+/// (could we use a vector here instead?)
 pub struct List {
     // Contents of a list node
     car: Object,
@@ -55,13 +56,32 @@ impl List {
     }
 }
 
+fn str_hash(s: &str) -> i32 {
+    s.as_bytes().iter().fold(0, |h, p| {
+        let h = h * 16 + (*p as i8 as i32);
+        let g = h & -0x10000000;
+        h ^ (g >> 24) ^ g
+    })
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Symbol {
+    name: String,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Env {
+    objects: Vec<Object>,
+    keys: Vec<Rc<Symbol>>,
+}
+
 type Obe = Option<Box<Extras>>;
 
 /// An idiomatic representation of an R object.
 #[derive(PartialEq, Debug, Clone)]
 pub enum Object {
     // Sym and Env can have muliple referencs to the same object.
-    SYMSXP(Obe, Rc<Object>),
+    SYMSXP(Obe, Rc<Symbol>),
     ENVSXP(Obe, Rc<Object>),
 
     // Lists are lisp-style car/cdr pairs.
@@ -119,7 +139,7 @@ impl Object {
             cdr: Object::NILVALUE(None),
         };
         let mut e = Extras::new();
-        e.tag = Object::SYMSXP(None, Rc::new(Object::chars(name)));
+        e.tag = Object::sym(name);
         std::mem::swap(&mut new_list.cdr, self);
         *self = Object::LISTSXP(Some(Box::new(e)), Rc::new(new_list))
     }
@@ -149,7 +169,7 @@ impl Object {
     }
 
     pub fn sym(chrs: &str) -> Self {
-        Object::SYMSXP(None, Rc::new(Object::CHARSXP(None, chrs.to_string())))
+        Object::SYMSXP(None, Rc::new(Symbol { name: chrs.to_string() }))
     }
 
     pub fn real(vals: Vec<f64>) -> Self {
@@ -162,6 +182,10 @@ impl Object {
 
     pub fn vec(vals: Vec<Object>) -> Self {
         Object::VECSXP(None, vals)
+    }
+
+    pub fn raw(vals: Vec<u8>) -> Self {
+        Object::RAWSXP(None, vals)
     }
 
     pub fn func() -> Self {
@@ -398,7 +422,14 @@ impl<R: Read> Reader<R> {
         if self.is_ascii {
             self.word()?;
             if self.buf == "NA" {
+                // Ross's birthday?
                 Ok(f64::from_bits(0x7ff0000000000000 + 1954))
+            } else if self.buf == "Nan" {
+                Ok(std::f64::NAN)
+            } else if self.buf == "Inf" {
+                Ok(std::f64::INFINITY)
+            } else if self.buf == "-Inf" {
+                Ok(std::f64::NEG_INFINITY)
             } else {
                 Ok(self.buf.parse::<f64>()?)
             }
@@ -447,7 +478,6 @@ impl<R: Read> Reader<R> {
                                 }
                                 val as char
                             }
-                            // todo, support octal encoded - maybe...
                             _ => ch as char,
                         };
                         //println!("chr={:03o}", chr as i32);
@@ -507,14 +537,9 @@ impl<R: Read> Reader<R> {
         extras.levels = levels;
         Ok(Some(Box::new(extras)))
     }
+
     // LISP-style linked list types.
-    fn dotted_list(
-        &mut self,
-        _has_attr: bool,
-        _has_tag: bool,
-        _is_obj: bool,
-        _levels: i32,
-    ) -> Result<Rc<List>> {
+    fn dotted_list(&mut self) -> Result<Rc<List>> {
         Ok(Rc::new(List {
             car: self.read_object()?,
             cdr: self.read_object()?,
@@ -564,7 +589,10 @@ impl<R: Read> Reader<R> {
             /*SYMSXP*/
             {
                 let obj = self.read_object()?;
-                let res = Object::SYMSXP(None, Rc::new(obj));
+                let res = match obj {
+                    Object::CHARSXP(_, s) => Object::sym(s.as_str()),
+                    _ => return Err(Error::from("symbol not a string"))
+                };
                 self.refs.push(res.clone());
                 res
             }
@@ -572,41 +600,37 @@ impl<R: Read> Reader<R> {
             2 =>
             /*LISTSXP*/
             {
-                Object::LISTSXP(
-                    self.list_extras(has_attr, has_tag, is_obj, 0)?,
-                    self.dotted_list(has_attr, has_tag, is_obj, levels)?,
-                )
+                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
+                let list = self.dotted_list()?;
+                Object::LISTSXP(extras, list)
             }
             3 =>
             /*CLOSXP*/
             {
-                Object::CLOSXP(
-                    self.list_extras(has_attr, has_tag, is_obj, 0)?,
-                    self.dotted_list(has_attr, has_tag, is_obj, levels)?,
-                )
+                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
+                let list = self.dotted_list()?;
+                Object::CLOSXP(extras, list)
             }
             5 =>
             /*PROMSXP*/
             {
-                Object::PROMSXP(
-                    self.list_extras(has_attr, has_tag, is_obj, 0)?,
-                    self.dotted_list(has_attr, has_tag, is_obj, levels)?,
-                )
+                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
+                let list = self.dotted_list()?;
+                Object::PROMSXP(extras, list)
             }
             6 =>
             /*LANGSXP*/
             {
-                Object::LANGSXP(
-                    self.list_extras(has_attr, has_tag, is_obj, 0)?,
-                    self.dotted_list(has_attr, has_tag, is_obj, levels)?,
-                )
+                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
+                let list = self.dotted_list()?;
+                Object::LANGSXP(extras, list)
             }
             17 =>
             /*DOTSXP*/
             {
                 Object::DOTSXP(
                     self.list_extras(has_attr, has_tag, is_obj, 0)?,
-                    self.dotted_list(has_attr, has_tag, is_obj, levels)?,
+                    self.dotted_list()?,
                 )
             }
             4 =>
@@ -721,7 +745,25 @@ impl<R: Read> Reader<R> {
             // 21 => /*BCODESXP*/ Object::BCODESXP(),
             // 22 => /*EXTPTRSXP*/ Object::EXTPTRSXP(),
             // 23 => /*WEAKREFSXP*/ Object::WEAKREFSXP(),
-            // 24 => /*RAWSXP*/ Object::RAWSXP(),
+            24 =>
+            /*RAWSXP*/
+            {
+                let length = self.integer()? as usize;
+                if self.is_ascii {
+                    let data: Result<Vec<_>> = (0..length)
+                        .map(|_| {
+                            self.word()?;
+                            Ok(u8::from_str_radix(self.buf.as_str(), 16).unwrap_or(0))
+                        })
+                        .collect();
+                    Object::RAWSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data?)
+                } else {
+                    let mut data = Vec::with_capacity(length);
+                    data.resize(length, 0);
+                    self.src.read_exact(data.as_mut_slice())?;
+                    Object::RAWSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                }
+            }
             // 25 => /*S4SXP*/ Object::S4SXP(),
             // 30 => /*NEWSXP*/ Object::NEWSXP(),
             // 31 => /*FREESXP*/ Object::FREESXP(),
@@ -779,7 +821,6 @@ impl<R: Read> Reader<R> {
 
 #[cfg(test)]
 mod tests {
-    use super::List;
     use super::Object;
     use super::Object::*;
     use super::Reader;
@@ -844,11 +885,16 @@ mod tests {
     fn sym_val() {
         // Actually a sym (1 262153 1 x) and a ref (511)
         let obj = read_ascii("A 2 197636 131840 19 2 1 262153 1 x 511");
-        let x = Rc::new(CHARSXP(None, "x".to_string()));
         assert_eq!(
             obj,
-            VECSXP(None, vec![SYMSXP(None, x.clone()), SYMSXP(None, x.clone())])
+            VECSXP(None, vec![Object::sym("x"), Object::sym("x")])
         );
+    }
+
+    #[test]
+    fn raw() {
+        let obj = read_ascii("A 2 197636 131840 24 10 00 00 00 00 00 00 00 00 00 00");
+        assert_eq!(obj, Object::raw(vec![0; 10]))
     }
 
     #[test]
