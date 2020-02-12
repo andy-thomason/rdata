@@ -47,16 +47,22 @@ impl List {
         let next = if slice.len() <= 1 {
             Object::null()
         } else {
-            Object::LISTSXP(None, Rc::new(List::from_slice(&slice[1..])))
+            Object::List(None, Rc::new(List::from_slice(&slice[1..])))
         };
         List {
             car: slice[0].clone(),
             cdr: next,
         }
     }
+
+    // Call cb for each element of a list.
+    /*pub fn for_each<T : Fn(&Object)>(&self, cb: T) {
+        cb(&self.car);
+        self.cdr.for_each(cb);
+    }*/
 }
 
-fn str_hash(s: &str) -> i32 {
+fn _str_hash(s: &str) -> i32 {
     s.as_bytes().iter().fold(0, |h, p| {
         let h = h * 16 + (*p as i8 as i32);
         let g = h & -0x10000000;
@@ -71,8 +77,10 @@ pub struct Symbol {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Env {
-    objects: Vec<Object>,
-    keys: Vec<Rc<Symbol>>,
+    locked: bool,
+    enclos: Object,
+    frame: Object,
+    keyvals: Vec<(Object, Object)>
 }
 
 type Obe = Option<Box<Extras>>;
@@ -81,47 +89,47 @@ type Obe = Option<Box<Extras>>;
 #[derive(PartialEq, Debug, Clone)]
 pub enum Object {
     // Sym and Env can have muliple referencs to the same object.
-    SYMSXP(Obe, Rc<Symbol>),
-    ENVSXP(Obe, Rc<Object>),
+    Sym(Obe, Rc<Symbol>),
+    Env(Obe, Rc<Env>),
 
     // Lists are lisp-style car/cdr pairs.
-    LISTSXP(Obe, Rc<List>),
-    CLOSXP(Obe, Rc<List>),
-    PROMSXP(Obe, Rc<List>),
-    LANGSXP(Obe, Rc<List>),
-    DOTSXP(Obe, Rc<List>),
+    List(Obe, Rc<List>),
+    Closure(Obe, Rc<List>),
+    Promise(Obe, Rc<List>),
+    Lang(Obe, Rc<List>),
+    Dot(Obe, Rc<List>),
 
     // These are vectors.
-    CHARSXP(Obe, String),
-    LGLSXP(Obe, Vec<bool>),
-    INTSXP(Obe, Vec<i32>),
-    REALSXP(Obe, Vec<f64>),
-    CPLXSXP(Obe, Vec<(f64, f64)>),
-    STRSXP(Obe, Vec<Object>),
-    VECSXP(Obe, Vec<Object>),
-    EXPRSXP(Obe, Vec<Object>),
-    RAWSXP(Obe, Vec<u8>),
+    Char(Obe, String),
+    Logical(Obe, Vec<bool>),
+    Int(Obe, Vec<i32>),
+    Real(Obe, Vec<f64>),
+    Cplx(Obe, Vec<(f64, f64)>),
+    Str(Obe, Vec<Object>),
+    Obj(Obe, Vec<Object>),
+    Expr(Obe, Vec<Object>),
+    Raw(Obe, Vec<u8>),
 
     // Special functions.
-    SPECIALSXP(Obe, String),
-    BUILTINSXP(Obe, String),
+    Special(Obe, String),
+    Builtin(Obe, String),
 
     // Yet to be done.
-    BCODESXP(Obe),
-    EXTPTRSXP(Obe),
-    WEAKREFSXP(Obe),
-    S4SXP(Obe),
-    NEWSXP(Obe),
-    FREESXP(Obe),
+    Bytecode(Obe),
+    ExtPtr(Obe),
+    WeakRef(Obe),
+    S4(Obe),
+    New(Obe),
+    Free(Obe),
 
     // Special values.
-    NILVALUE(Obe),
-    GLOBALENV(Obe),
-    UNBOUNDVALUE(Obe),
-    MISSINGARG(Obe),
-    BASENAMESPACE(Obe),
-    EMPTYENV(Obe),
-    BASEENV(Obe),
+    Nil(Obe),
+    Global(Obe),
+    Unbound(Obe),
+    MissingArg(Obe),
+    BaseNamespace(Obe),
+    EmptyEnv(Obe),
+    BaseEnv(Obe),
 }
 
 impl Object {
@@ -136,31 +144,31 @@ impl Object {
     pub fn append_to_list(&mut self, name: &str, object: Object) {
         let mut new_list = List {
             car: object,
-            cdr: Object::NILVALUE(None),
+            cdr: Object::Nil(None),
         };
         let mut e = Extras::new();
         e.tag = Object::sym(name);
         std::mem::swap(&mut new_list.cdr, self);
-        *self = Object::LISTSXP(Some(Box::new(e)), Rc::new(new_list))
+        *self = Object::List(Some(Box::new(e)), Rc::new(new_list))
     }
 
     pub fn is_null(&self) -> bool {
         match self {
-            Object::NILVALUE(_) => true,
+            Object::Nil(_) => true,
             _ => false,
         }
     }
 
     pub fn null() -> Self {
-        Object::NILVALUE(None)
+        Object::Nil(None)
     }
 
     pub fn chars(chrs: &str) -> Self {
-        Object::CHARSXP(None, chrs.to_string())
+        Object::Char(None, chrs.to_string())
     }
 
     pub fn strings(strs: Vec<&str>) -> Self {
-        Object::STRSXP(
+        Object::Str(
             None,
             strs.into_iter()
                 .map(|s| Object::chars(s))
@@ -169,23 +177,23 @@ impl Object {
     }
 
     pub fn sym(chrs: &str) -> Self {
-        Object::SYMSXP(None, Rc::new(Symbol { name: chrs.to_string() }))
+        Object::Sym(None, Rc::new(Symbol { name: chrs.to_string() }))
     }
 
     pub fn real(vals: Vec<f64>) -> Self {
-        Object::REALSXP(None, vals)
+        Object::Real(None, vals)
     }
 
     pub fn integer(vals: Vec<i32>) -> Self {
-        Object::INTSXP(None, vals)
+        Object::Int(None, vals)
     }
 
     pub fn vec(vals: Vec<Object>) -> Self {
-        Object::VECSXP(None, vals)
+        Object::Obj(None, vals)
     }
 
     pub fn raw(vals: Vec<u8>) -> Self {
-        Object::RAWSXP(None, vals)
+        Object::Raw(None, vals)
     }
 
     pub fn func() -> Self {
@@ -193,82 +201,98 @@ impl Object {
     }
 
     pub fn lang(vals: Vec<Object>) -> Self {
-        Object::LANGSXP(None, Rc::new(List::from_slice(vals.as_slice())))
+        Object::Lang(None, Rc::new(List::from_slice(vals.as_slice())))
     }
 
     pub fn expr(vals: Vec<Object>) -> Self {
-        Object::EXPRSXP(None, vals)
+        Object::Expr(None, vals)
+    }
+
+    pub fn env(
+        locked: bool,
+        enclos: Object,
+        frame: Object,
+        keyvals: Vec<(Object, Object)>
+    ) -> Object {
+        let env = Env {
+            locked,
+            enclos,
+            frame,
+            keyvals
+        };
+
+        Object::Env(None, Rc::new(env))
     }
 
     pub fn extras_mut(&mut self) -> &mut Obe {
         match self {
-            Object::SYMSXP(ref mut obe, _)
-            | Object::ENVSXP(ref mut obe, _)
-            | Object::LISTSXP(ref mut obe, _)
-            | Object::CLOSXP(ref mut obe, _)
-            | Object::PROMSXP(ref mut obe, _)
-            | Object::LANGSXP(ref mut obe, _)
-            | Object::DOTSXP(ref mut obe, _)
-            | Object::SPECIALSXP(ref mut obe, _)
-            | Object::BUILTINSXP(ref mut obe, _)
-            | Object::CHARSXP(ref mut obe, _)
-            | Object::LGLSXP(ref mut obe, _)
-            | Object::INTSXP(ref mut obe, _)
-            | Object::REALSXP(ref mut obe, _)
-            | Object::CPLXSXP(ref mut obe, _)
-            | Object::STRSXP(ref mut obe, _)
-            | Object::VECSXP(ref mut obe, _)
-            | Object::EXPRSXP(ref mut obe, _)
-            | Object::BCODESXP(ref mut obe)
-            | Object::EXTPTRSXP(ref mut obe)
-            | Object::WEAKREFSXP(ref mut obe)
-            | Object::RAWSXP(ref mut obe, _)
-            | Object::S4SXP(ref mut obe)
-            | Object::NEWSXP(ref mut obe)
-            | Object::FREESXP(ref mut obe)
-            | Object::NILVALUE(ref mut obe)
-            | Object::GLOBALENV(ref mut obe)
-            | Object::UNBOUNDVALUE(ref mut obe)
-            | Object::MISSINGARG(ref mut obe)
-            | Object::BASENAMESPACE(ref mut obe)
-            | Object::EMPTYENV(ref mut obe)
-            | Object::BASEENV(ref mut obe) => obe,
+            Object::Sym(ref mut obe, _)
+            | Object::Env(ref mut obe, _)
+            | Object::List(ref mut obe, _)
+            | Object::Closure(ref mut obe, _)
+            | Object::Promise(ref mut obe, _)
+            | Object::Lang(ref mut obe, _)
+            | Object::Dot(ref mut obe, _)
+            | Object::Special(ref mut obe, _)
+            | Object::Builtin(ref mut obe, _)
+            | Object::Char(ref mut obe, _)
+            | Object::Logical(ref mut obe, _)
+            | Object::Int(ref mut obe, _)
+            | Object::Real(ref mut obe, _)
+            | Object::Cplx(ref mut obe, _)
+            | Object::Str(ref mut obe, _)
+            | Object::Obj(ref mut obe, _)
+            | Object::Expr(ref mut obe, _)
+            | Object::Bytecode(ref mut obe)
+            | Object::ExtPtr(ref mut obe)
+            | Object::WeakRef(ref mut obe)
+            | Object::Raw(ref mut obe, _)
+            | Object::S4(ref mut obe)
+            | Object::New(ref mut obe)
+            | Object::Free(ref mut obe)
+            | Object::Nil(ref mut obe)
+            | Object::Global(ref mut obe)
+            | Object::Unbound(ref mut obe)
+            | Object::MissingArg(ref mut obe)
+            | Object::BaseNamespace(ref mut obe)
+            | Object::EmptyEnv(ref mut obe)
+            | Object::BaseEnv(ref mut obe) => obe,
         }
     }
 
     pub fn extras(&self) -> &Obe {
         match self {
-            Object::SYMSXP(ref obe, _)
-            | Object::ENVSXP(ref obe, _)
-            | Object::LISTSXP(ref obe, _)
-            | Object::CLOSXP(ref obe, _)
-            | Object::PROMSXP(ref obe, _)
-            | Object::LANGSXP(ref obe, _)
-            | Object::DOTSXP(ref obe, _)
-            | Object::SPECIALSXP(ref obe, _)
-            | Object::BUILTINSXP(ref obe, _)
-            | Object::CHARSXP(ref obe, _)
-            | Object::LGLSXP(ref obe, _)
-            | Object::INTSXP(ref obe, _)
-            | Object::REALSXP(ref obe, _)
-            | Object::CPLXSXP(ref obe, _)
-            | Object::STRSXP(ref obe, _)
-            | Object::VECSXP(ref obe, _)
-            | Object::EXPRSXP(ref obe, _)
-            | Object::BCODESXP(ref obe)
-            | Object::EXTPTRSXP(ref obe)
-            | Object::WEAKREFSXP(ref obe)
-            | Object::RAWSXP(ref obe, _)
-            | Object::S4SXP(ref obe)
-            | Object::NEWSXP(ref obe)
-            | Object::FREESXP(ref obe)
-            | Object::NILVALUE(ref obe)
-            | Object::GLOBALENV(ref obe)
-            | Object::UNBOUNDVALUE(ref obe)
-            | Object::MISSINGARG(ref obe)
-            | Object::BASENAMESPACE(ref obe)
-            | Object::EMPTYENV(ref obe)
-            | Object::BASEENV(ref obe) => obe,
+            Object::Sym(ref obe, _)
+            | Object::Env(ref obe, _)
+            | Object::List(ref obe, _)
+            | Object::Closure(ref obe, _)
+            | Object::Promise(ref obe, _)
+            | Object::Lang(ref obe, _)
+            | Object::Dot(ref obe, _)
+            | Object::Special(ref obe, _)
+            | Object::Builtin(ref obe, _)
+            | Object::Char(ref obe, _)
+            | Object::Logical(ref obe, _)
+            | Object::Int(ref obe, _)
+            | Object::Real(ref obe, _)
+            | Object::Cplx(ref obe, _)
+            | Object::Str(ref obe, _)
+            | Object::Obj(ref obe, _)
+            | Object::Expr(ref obe, _)
+            | Object::Bytecode(ref obe)
+            | Object::ExtPtr(ref obe)
+            | Object::WeakRef(ref obe)
+            | Object::Raw(ref obe, _)
+            | Object::S4(ref obe)
+            | Object::New(ref obe)
+            | Object::Free(ref obe)
+            | Object::Nil(ref obe)
+            | Object::Global(ref obe)
+            | Object::Unbound(ref obe)
+            | Object::MissingArg(ref obe)
+            | Object::BaseNamespace(ref obe)
+            | Object::EmptyEnv(ref obe)
+            | Object::BaseEnv(ref obe) => obe,
         }
     }
 
@@ -306,14 +330,14 @@ impl Object {
 
     pub fn len(&self) -> usize {
         match self {
-            Object::LGLSXP(_, vec) => vec.len(),
-            Object::INTSXP(_, vec) => vec.len(),
-            Object::REALSXP(_, vec) => vec.len(),
-            Object::CPLXSXP(_, vec) => vec.len(),
-            Object::STRSXP(_, vec) => vec.len(),
-            Object::VECSXP(_, vec) => vec.len(),
-            Object::EXPRSXP(_, vec) => vec.len(),
-            Object::RAWSXP(_, vec) => vec.len(),
+            Object::Logical(_, vec) => vec.len(),
+            Object::Int(_, vec) => vec.len(),
+            Object::Real(_, vec) => vec.len(),
+            Object::Cplx(_, vec) => vec.len(),
+            Object::Str(_, vec) => vec.len(),
+            Object::Obj(_, vec) => vec.len(),
+            Object::Expr(_, vec) => vec.len(),
+            Object::Raw(_, vec) => vec.len(),
             _ => 0,
         }
     }
@@ -546,23 +570,6 @@ impl<R: Read> Reader<R> {
         }))
     }
 
-    pub fn env(
-        &mut self,
-        _locked: bool,
-        enclos: Object,
-        frame: Object,
-        hashtab: Object,
-        attr: Object,
-    ) -> Object {
-        let data = Rc::new(Object::vec(vec![enclos, frame, hashtab]));
-        if !attr.is_null() {
-            let mut e = Extras::new();
-            e.attr = attr;
-            Object::ENVSXP(Some(Box::new(e)), data)
-        } else {
-            Object::ENVSXP(None, data)
-        }
-    }
 
     fn read_ref(&mut self, flags: i32) -> Result<Object> {
         let ref_idx = if (flags >> 8) == 0 {
@@ -586,11 +593,11 @@ impl<R: Read> Reader<R> {
         Ok(match objtype {
             //0 => /*NILSXP*/ Object::NILSXP(None),
             1 =>
-            /*SYMSXP*/
+            /*Sym*/
             {
                 let obj = self.read_object()?;
                 let res = match obj {
-                    Object::CHARSXP(_, s) => Object::sym(s.as_str()),
+                    Object::Char(_, s) => Object::sym(s.as_str()),
                     _ => return Err(Error::from("symbol not a string"))
                 };
                 self.refs.push(res.clone());
@@ -598,68 +605,83 @@ impl<R: Read> Reader<R> {
             }
 
             2 =>
-            /*LISTSXP*/
+            /*List*/
             {
                 let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
                 let list = self.dotted_list()?;
-                Object::LISTSXP(extras, list)
+                Object::List(extras, list)
             }
             3 =>
-            /*CLOSXP*/
+            /*Closure*/
             {
                 let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
                 let list = self.dotted_list()?;
-                Object::CLOSXP(extras, list)
+                Object::Closure(extras, list)
             }
             5 =>
-            /*PROMSXP*/
+            /*Promise*/
             {
                 let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
                 let list = self.dotted_list()?;
-                Object::PROMSXP(extras, list)
+                Object::Promise(extras, list)
             }
             6 =>
-            /*LANGSXP*/
+            /*Lang*/
             {
                 let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
                 let list = self.dotted_list()?;
-                Object::LANGSXP(extras, list)
+                Object::Lang(extras, list)
             }
             17 =>
-            /*DOTSXP*/
+            /*Dot*/
             {
-                Object::DOTSXP(
+                Object::Dot(
                     self.list_extras(has_attr, has_tag, is_obj, 0)?,
                     self.dotted_list()?,
                 )
             }
             4 =>
-            /*ENVSXP*/
+            /*Env*/
             {
                 let locked = self.integer()? != 0;
                 let enclos = self.read_object()?;
                 let frame = self.read_object()?;
-                let hashtab = self.read_object()?;
+                let _hashtab = self.read_object()?;
                 let attr = self.read_object()?;
-                let res = self.env(locked, enclos, frame, hashtab, attr);
+                let keyvals = Vec::new();
+                /*match hashtab {
+                    Object::Obj(_, list) => {
+                        for obj in list {
+                            match obj {
+                                Object::List(_, list) => {
+                                    list.for_each(|t, v| keyvals.push((t.clone(), v.clone())));
+                                }
+                            }
+                        }
+                    }
+                };*/
+                let res = Object::env(locked, enclos, frame, keyvals);
+                if !attr.is_null() {
+                    //res.set_attr(attr);
+                }
                 self.refs.push(res.clone());
                 res
             }
             7 =>
-            /*SPECIALSXP*/
+            /*Special*/
             {
                 let length = self.integer()? as usize;
                 let instr = self.string(length)?;
-                Object::SPECIALSXP(None, instr)
+                Object::Special(None, instr)
             }
             8 =>
-            /*BUILTINSXP*/
+            /*Builtin*/
             {
                 let length = self.integer()? as usize;
                 println!("len={}", length);
                 let instr = self.string(length)?;
                 println!("instr={}", instr);
-                Object::BUILTINSXP(None, instr)
+                Object::Builtin(None, instr)
             }
             9 =>
             /*CHARSXP*/
@@ -667,40 +689,40 @@ impl<R: Read> Reader<R> {
                 let length = self.integer()? as usize;
                 let instr = self.string(length)?;
                 // ignore the levels field for now.
-                Object::CHARSXP(self.extras(has_attr, has_tag, is_obj, 0)?, instr)
+                Object::Char(self.extras(has_attr, has_tag, is_obj, 0)?, instr)
             }
             10 =>
-            /*LGLSXP*/
+            /*Logical*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.integer()? != 0);
                 }
-                Object::LGLSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Logical(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             13 =>
-            /*INTSXP*/
+            /*Int*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.integer()?);
                 }
-                Object::INTSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Int(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             14 =>
-            /*REALSXP*/
+            /*Real*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.real()?);
                 }
-                Object::REALSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Real(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             15 =>
-            /*CPLXSXP*/
+            /*Cplx*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
@@ -709,44 +731,44 @@ impl<R: Read> Reader<R> {
                     let im = self.real()?;
                     data.push((re, im));
                 }
-                Object::CPLXSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Cplx(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             16 =>
-            /*STRSXP*/
+            /*Str*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.read_object()?);
                 }
-                Object::STRSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Str(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             // 18 => /*ANYSXP*/ Object::ANYSXP(),
             19 =>
-            /*VECSXP*/
+            /*Vec*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.read_object()?);
                 }
-                Object::VECSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Obj(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             20 =>
-            /*EXPRSXP*/
+            /*Expr*/
             {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.read_object()?);
                 }
-                Object::EXPRSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Object::Expr(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
-            // 21 => /*BCODESXP*/ Object::BCODESXP(),
-            // 22 => /*EXTPTRSXP*/ Object::EXTPTRSXP(),
-            // 23 => /*WEAKREFSXP*/ Object::WEAKREFSXP(),
+            // 21 => /*Bytecode*/ Object::Bytecode(),
+            // 22 => /*ExtPtr*/ Object::ExtPtr(),
+            // 23 => /*WeakRef*/ Object::WeakRef(),
             24 =>
-            /*RAWSXP*/
+            /*Raw*/
             {
                 let length = self.integer()? as usize;
                 if self.is_ascii {
@@ -756,15 +778,15 @@ impl<R: Read> Reader<R> {
                             Ok(u8::from_str_radix(self.buf.as_str(), 16).unwrap_or(0))
                         })
                         .collect();
-                    Object::RAWSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data?)
+                    Object::Raw(self.extras(has_attr, has_tag, is_obj, levels)?, data?)
                 } else {
                     let mut data = Vec::with_capacity(length);
                     data.resize(length, 0);
                     self.src.read_exact(data.as_mut_slice())?;
-                    Object::RAWSXP(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                    Object::Raw(self.extras(has_attr, has_tag, is_obj, levels)?, data)
                 }
             }
-            // 25 => /*S4SXP*/ Object::S4SXP(),
+            // 25 => /*S4*/ Object::S4(),
             // 30 => /*NEWSXP*/ Object::NEWSXP(),
             // 31 => /*FREESXP*/ Object::FREESXP(),
             255 =>
@@ -775,27 +797,27 @@ impl<R: Read> Reader<R> {
             254 =>
             /*NILVALUE_SXP*/
             {
-                Object::NILVALUE(None)
+                Object::Nil(None)
             }
             253 =>
             /*GLOBALENV_SXP*/
             {
-                Object::GLOBALENV(None)
+                Object::Global(None)
             }
             252 =>
             /*UNBOUNDVALUE_SXP*/
             {
-                Object::UNBOUNDVALUE(None)
+                Object::Unbound(None)
             }
             251 =>
             /*MISSINGARG_SXP*/
             {
-                Object::MISSINGARG(None)
+                Object::MissingArg(None)
             }
             250 =>
             /*BASENAMESPACE_SXP*/
             {
-                Object::BASENAMESPACE(None)
+                Object::BaseNamespace(None)
             }
             // 249 => /*NAMESPACESXP*/ Object::NILSXP,
             // 248 => /*PACKAGESXP*/ Object::NILSXP,
@@ -807,12 +829,12 @@ impl<R: Read> Reader<R> {
             242 =>
             /*EMPTYENV_SXP*/
             {
-                Object::EMPTYENV(None)
+                Object::EmptyEnv(None)
             }
             241 =>
             /*BASEENV_SXP*/
             {
-                Object::BASEENV(None)
+                Object::BaseEnv(None)
             }
             _ => Err(Error::from(format!("unsupported R data type {}", objtype)))?,
         })
@@ -824,7 +846,7 @@ mod tests {
     use super::Object;
     use super::Object::*;
     use super::Reader;
-    use std::rc::Rc;
+    //use std::rc::Rc;
 
     fn read_ascii(s: &str) -> Object {
         let mut src = Reader::try_new(std::io::Cursor::new(s)).unwrap();
@@ -854,31 +876,31 @@ mod tests {
     #[test]
     fn int_val() {
         let obj = read_ascii("A 2 197636 131840 13 1 1");
-        assert_eq!(obj, Object::INTSXP(None, vec![1]));
+        assert_eq!(obj, Object::Int(None, vec![1]));
     }
 
     #[test]
     fn real_val() {
         let obj = read_ascii("A 2 197636 131840 14 1 1");
-        assert_eq!(obj, Object::REALSXP(None, vec![1.]));
+        assert_eq!(obj, Object::Real(None, vec![1.]));
     }
 
     #[test]
     fn complex_val() {
         let obj = read_ascii("A 2 197636 131840 15 1 1 2");
-        assert_eq!(obj, Object::CPLXSXP(None, vec![(1., 2.)]));
+        assert_eq!(obj, Object::Cplx(None, vec![(1., 2.)]));
     }
 
     #[test]
     fn null_val() {
         let obj = read_ascii("A 2 197636 131840 254");
-        assert_eq!(obj, Object::NILVALUE(None));
+        assert_eq!(obj, Object::Nil(None));
     }
 
     #[test]
     fn bool_val() {
         let obj = read_ascii("A 2 197636 131840 10 2 1 0");
-        assert_eq!(obj, Object::LGLSXP(None, vec![true, false]));
+        assert_eq!(obj, Object::Logical(None, vec![true, false]));
     }
 
     #[test]
@@ -887,7 +909,7 @@ mod tests {
         let obj = read_ascii("A 2 197636 131840 19 2 1 262153 1 x 511");
         assert_eq!(
             obj,
-            VECSXP(None, vec![Object::sym("x"), Object::sym("x")])
+            Obj(None, vec![Object::sym("x"), Object::sym("x")])
         );
     }
 
@@ -938,7 +960,7 @@ mod tests {
         let obj = read_ascii("A 2 197636 131840 19 1 14 1 1");
         assert_eq!(
             obj,
-            Object::VECSXP(None, vec![Object::REALSXP(None, vec![1.])])
+            Object::Obj(None, vec![Object::Real(None, vec![1.])])
         );
     }
 
@@ -947,7 +969,7 @@ mod tests {
         let obj =
             read_ascii("A 2 197636 131840 531 1 14 1 1 1026 1 262153 5 names 16 1 262153 1 a 254");
         let names = Object::strings(vec!["a"]);
-        let mut cmp = Object::VECSXP(None, vec![Object::REALSXP(None, vec![1.])]);
+        let mut cmp = Object::Obj(None, vec![Object::Real(None, vec![1.])]);
         cmp.add_attr("names", names);
         assert_eq!(obj, cmp);
     }
@@ -955,12 +977,13 @@ mod tests {
     #[test]
     fn env() {
         let obj = read_ascii("A 2 197636 131840 4 0 253 254 19 29 254 254 254 254 1026 1 262153 1 x 14 1 1 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254");
-        let mut hashvals = vec![NILVALUE(None); 29];
-        hashvals[4] = Object::named_list(vec!["x"], vec![Object::real(vec![1.])]);
-        let hashtab = Object::vec(hashvals);
-        let enclos = GLOBALENV(None);
+        //let mut hashvals = vec![Nil(None); 29];
+        //hashvals[4] = Object::named_list(vec!["x"], vec![Object::real(vec![1.])]);
+        //let hashtab = Object::vec(hashvals);
+        let enclos = Global(None);
         let frame = Object::null();
-        let cmp = Object::ENVSXP(None, Rc::new(Object::vec(vec![enclos, frame, hashtab])));
+        let keyvals = vec![(Object::sym("x"), Object::real(vec![1.]))];
+        let cmp = Object::env(false, enclos, frame, keyvals);
         assert_eq!(obj, cmp);
     }
 
@@ -1008,7 +1031,7 @@ mod tests {
         // c
         let obj = read_ascii("A 2 197636 131840 8 1 c");
         println!("{:?}", obj);
-        assert_eq!(obj, BUILTINSXP(None, "c".to_string()));
+        assert_eq!(obj, Builtin(None, "c".to_string()));
     }
 
     #[test]
@@ -1016,7 +1039,7 @@ mod tests {
         // `<-`
         let obj = read_ascii("A 2 197636 131840 7 2 <-");
         println!("{:?}", obj);
-        assert_eq!(obj, SPECIALSXP(None, "<-".to_string()));
+        assert_eq!(obj, Special(None, "<-".to_string()));
     }
 
     #[test]
@@ -1040,13 +1063,13 @@ mod tests {
     //         r"RDA2 A 2 197636 131840 1026 1 262153 2 df 787 2 14 1 1 14 1 2 1026 1 262153 5 names 16 2 262153 1 a 262153 1 b 1026 1 262153 9 row.names 13 2 NA -1 1026 1 262153 5 class 16 1 262153 10 data.frame 254 254",
     //     );
     //     println!("rda2={:?}", obj);
-    //     assert_eq!(obj, NILVALUE(None));
+    //     assert_eq!(obj, Nil(None));
     // }
 
     #[test]
     fn bin() {
         let obj = read_bin("580a0000000200030404000203000000000e000000013ff0000000000000");
         println!("bin={:?}", obj);
-        assert_eq!(obj, REALSXP(None, vec![1.0]));
+        assert_eq!(obj, Real(None, vec![1.0]));
     }
 }
