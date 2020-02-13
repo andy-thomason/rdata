@@ -81,7 +81,7 @@ pub struct Env {
 type Obe = Option<Box<Extras>>;
 
 /// An idiomatic representation of an R object.
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Clone)]
 pub enum Obj {
     // Sym and Env can have muliple referencs to the same object.
     Sym(Obe, Rc<Symbol>),
@@ -125,6 +125,48 @@ pub enum Obj {
     BaseNamespace(Obe),
     EmptyEnv(Obe),
     BaseEnv(Obe),
+}
+
+impl std::fmt::Debug for Obj {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let extras = self.extras();
+        if let Some(ref extras) = extras {
+            write!(f, "{:?}:", extras)?;
+        }
+        match self {
+            Obj::Sym(_, ref val) => write!(f, "Sym({:?})", val),
+            Obj::Env(_, ref val) => write!(f, "Env({:?})", val),
+            Obj::List(_, ref val) => write!(f, "List({:?})", val),
+            Obj::Closure(_, ref val) => write!(f, "Closure({:?})", val),
+            Obj::Promise(_, ref val) => write!(f, "Promise({:?})", val),
+            Obj::Lang(_, ref val) => write!(f, "Lang({:?})", val),
+            Obj::Dot(_, ref val) => write!(f, "Dot({:?})", val),
+            Obj::Special(_, ref val) => write!(f, "Special({:?})", val),
+            Obj::Builtin(_, ref val) => write!(f, "Builtin({:?})", val),
+            Obj::Char(_, ref val) => write!(f, "Char({:?})", val),
+            Obj::Logical(_, ref val) => write!(f, "Logical({:?})", val),
+            Obj::Int(_, ref val) => write!(f, "Int({:?})", val),
+            Obj::Real(_, ref val) => write!(f, "Real({:?})", val),
+            Obj::Cplx(_, ref val) => write!(f, "Cplx({:?})", val),
+            Obj::Str(_, ref val) => write!(f, "Str({:?})", val),
+            Obj::Obj(_, ref val) => write!(f, "Obj({:?})", val),
+            Obj::Expr(_, ref val) => write!(f, "Expr({:?})", val),
+            Obj::Raw(_, ref val) => write!(f, "Raw({:?})", val),
+            Obj::Bytecode(_) => write!(f, "Bytecode()"),
+            Obj::ExtPtr(_) => write!(f, "ExtPtr()"),
+            Obj::WeakRef(_) => write!(f, "WeakRef()"),
+            Obj::S4(_) => write!(f, "S4()"),
+            Obj::New(_) => write!(f, "New()"),
+            Obj::Free(_) => write!(f, "Free()"),
+            Obj::Nil(_) => write!(f, "Nil()"),
+            Obj::Global(_) => write!(f, "Global()"),
+            Obj::Unbound(_) => write!(f, "Unbound()"),
+            Obj::MissingArg(_) => write!(f, "MissingArg()"),
+            Obj::BaseNamespace(_) => write!(f, "BaseNamespace()"),
+            Obj::EmptyEnv(_) => write!(f, "EmptyEnv()"),
+            Obj::BaseEnv(_) => write!(f, "BaseEnv()"),
+        }
+    }
 }
 
 impl Obj {
@@ -985,15 +1027,12 @@ mod tests {
 
     #[test]
     fn env() {
-        let _obj = read_ascii("A 2 197636 131840 4 0 253 254 19 29 254 254 254 254 1026 1 262153 1 x 14 1 1 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254");
-        //let mut hashvals = vec![Nil(None); 29];
-        //hashvals[4] = Obj::named_list(vec!["x"], vec![Obj::real(vec![1.])]);
-        //let hashtab = Obj::vec(hashvals);
+        let obj = read_ascii("A 2 197636 131840 4 0 253 254 19 29 254 254 254 254 1026 1 262153 1 x 14 1 1 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254");
         let enclos = Global(None);
         let frame = Obj::null();
         let keyvals = vec![(Obj::sym("x"), Obj::real(vec![1.]))];
-        let _cmp = Obj::env(false, enclos, frame, keyvals);
-        //assert_eq!(obj, cmp);
+        let cmp = Obj::env(false, enclos, frame, keyvals);
+        assert_eq!(obj, cmp);
     }
 
     #[test]
