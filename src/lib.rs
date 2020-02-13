@@ -31,41 +31,6 @@ pub struct Extras {
     is_obj: bool,
 }
 
-#[derive(PartialEq, Debug, Clone)]
-/// See https://en.wikipedia.org/wiki/CAR_and_CDR
-/// (could we use a vector here instead?)
-pub struct List {
-    // Contents of a list node
-    car: Object,
-
-    // Rest of the list.
-    cdr: Object,
-}
-
-impl List {
-    pub fn from_slice(slice: &[Object]) -> Self {
-        let next = if slice.len() <= 1 {
-            Object::null()
-        } else {
-            Object::List(None, Rc::new(List::from_slice(&slice[1..])))
-        };
-        List {
-            car: slice[0].clone(),
-            cdr: next,
-        }
-    }
-
-    // Call cb for each element of a list.
-    /*pub fn for_each<T : FnOnce(&Object, &Object)>(&self, cb: T) {
-        cb(self.car.tag(), &self.car);
-        match &self.cdr {
-            Object::List(_, ref list) => {
-                list.for_each(cb);
-            }
-            _ => ()
-        }
-    }*/
-}
 
 fn _str_hash(s: &str) -> i32 {
     s.as_bytes().iter().fold(0, |h, p| {
@@ -98,11 +63,11 @@ pub enum Object {
     Env(Obe, Rc<Env>),
 
     // Lists are lisp-style car/cdr pairs.
-    List(Obe, Rc<List>),
-    Closure(Obe, Rc<List>),
-    Promise(Obe, Rc<List>),
-    Lang(Obe, Rc<List>),
-    Dot(Obe, Rc<List>),
+    List(Obe, Vec<(Object, Object)>),
+    Closure(Obe, Vec<(Object, Object)>),
+    Promise(Obe, Vec<(Object, Object)>),
+    Lang(Obe, Vec<(Object, Object)>),
+    Dot(Obe, Vec<(Object, Object)>),
 
     // These are vectors.
     Char(Obe, String),
@@ -147,14 +112,16 @@ impl Object {
     }
 
     pub fn append_to_list(&mut self, name: &str, object: Object) {
-        let mut new_list = List {
-            car: object,
-            cdr: Object::Nil(None),
-        };
-        let mut e = Extras::new();
-        e.tag = Object::sym(name);
-        std::mem::swap(&mut new_list.cdr, self);
-        *self = Object::List(Some(Box::new(e)), Rc::new(new_list))
+        match self {
+            Object::List(_, ref mut list)
+            | Object::Closure(_, ref mut list)
+            | Object::Promise(_, ref mut list)
+            | Object::Lang(_, ref mut list)
+            | Object::Dot(_, ref mut list) => {
+                list.push((Object::sym(name), object))
+            }
+            _ => ()
+        }
     }
 
     pub fn is_null(&self) -> bool {
@@ -206,7 +173,7 @@ impl Object {
     }
 
     pub fn lang(vals: Vec<Object>) -> Self {
-        Object::Lang(None, Rc::new(List::from_slice(vals.as_slice())))
+        Object::Lang(None, vals.into_iter().map(|x| (Object::null(), x)).collect())
     }
 
     pub fn expr(vals: Vec<Object>) -> Self {
@@ -308,6 +275,9 @@ impl Object {
         }
 
         if let Some(ref mut extras) = extras {
+            if extras.attr.is_null() {
+                extras.attr = Object::List(None, Vec::new());
+            }
             extras.attr.append_to_list(name, object);
         }
     }
@@ -326,9 +296,9 @@ impl Object {
         let cmax = columns.iter().map(|c| c.len()).max().unwrap_or(1);
         let n: i32 = i32::from_usize(cmax).unwrap_or(1);
         let mut res = Object::vec(columns);
-        res.add_attr("class", Object::strings(vec!["data.frame"]));
-        res.add_attr("row.names", Object::integer(vec![-2147483648, -(n as i32)]));
         res.add_attr("names", Object::strings(names));
+        res.add_attr("row.names", Object::integer(vec![-2147483648, -(n as i32)]));
+        res.add_attr("class", Object::strings(vec!["data.frame"]));
         res.set_is_obj(true);
         res
     }
@@ -551,35 +521,39 @@ impl<R: Read> Reader<R> {
         Ok(Some(Box::new(extras)))
     }
 
-    // LISP-style linked list types.
-    fn list_extras(
+    // These lists are stored in R as lisp-style CAR/CDR pairs.
+    // Here we convert this to a vector, avoiding recursion.
+    fn dotted_list(
         &mut self,
         has_attr: bool,
         has_tag: bool,
-        is_obj: bool,
-        levels: i32,
-    ) -> Result<Obe> {
-        if !has_attr && !has_tag && !is_obj && levels == 0 {
-            return Ok(None);
+        mut _is_obj: bool,
+        mut _levels: i32,
+     ) -> Result<Vec<(Object, Object)>> {
+        let mut res = Vec::new();
+        let mut _attr = if !has_attr { Object::null() } else { self.read_object()? };
+        let mut tag = if !has_tag { Object::null() } else { self.read_object()? };
+        //extras.is_obj = is_obj;
+        //extras.levels = levels;
+        loop {
+            let car = self.read_object()?;
+            res.push((tag, car));
+            let flags = self.integer()?;
+            let objtype = flags & 0xff;
+            _levels = flags >> 12;
+            _is_obj = (flags & 0x100) != 0;
+            let has_attr = (flags & 0x200) != 0;
+            let has_tag = (flags & 0x400) != 0;
+            if objtype == 254 {
+                break;
+            }
+            if objtype != 2 {
+                return Err(Error::from("badly formed list"));
+            }
+            _attr = if !has_attr { Object::null() } else { self.read_object()? };
+            tag = if !has_tag { Object::null() } else { self.read_object()? };
         }
-        let mut extras = Extras::new();
-        if has_attr {
-            extras.attr = self.read_object()?;
-        }
-        if has_tag {
-            extras.tag = self.read_object()?;
-        }
-        extras.is_obj = is_obj;
-        extras.levels = levels;
-        Ok(Some(Box::new(extras)))
-    }
-
-    // LISP-style linked list types.
-    fn dotted_list(&mut self) -> Result<Rc<List>> {
-        Ok(Rc::new(List {
-            car: self.read_object()?,
-            cdr: self.read_object()?,
-        }))
+        Ok(res)
     }
 
     fn read_ref(&mut self, flags: i32) -> Result<Object> {
@@ -594,6 +568,10 @@ impl<R: Read> Reader<R> {
 
     pub fn read_object(&mut self) -> Result<Object> {
         let flags = self.integer()?;
+        self.read_object_with_flags(flags)
+    }
+
+    pub fn read_object_with_flags(&mut self, flags: i32) -> Result<Object> {
         let objtype = flags & 0xff;
         let levels = flags >> 12;
         let is_obj = (flags & 0x100) != 0;
@@ -618,38 +596,32 @@ impl<R: Read> Reader<R> {
             2 =>
             /*List*/
             {
-                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
-                let list = self.dotted_list()?;
-                Object::List(extras, list)
+                let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
+                Object::List(None, list)
             }
             3 =>
             /*Closure*/
             {
-                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
-                let list = self.dotted_list()?;
-                Object::Closure(extras, list)
+                let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
+                Object::Closure(None, list)
             }
             5 =>
             /*Promise*/
             {
-                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
-                let list = self.dotted_list()?;
-                Object::Promise(extras, list)
+                let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
+                Object::Promise(None, list)
             }
             6 =>
             /*Lang*/
             {
-                let extras = self.list_extras(has_attr, has_tag, is_obj, 0)?;
-                let list = self.dotted_list()?;
-                Object::Lang(extras, list)
+                let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
+                Object::Lang(None, list)
             }
             17 =>
             /*Dot*/
             {
-                Object::Dot(
-                    self.list_extras(has_attr, has_tag, is_obj, 0)?,
-                    self.dotted_list()?,
-                )
+                let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
+                Object::Dot(None, list)
             }
             4 =>
             /*Env*/
@@ -660,19 +632,19 @@ impl<R: Read> Reader<R> {
                 let hashtab = self.read_object()?;
                 let attr = self.read_object()?;
                 let mut keyvals = Vec::new();
-                /*match hashtab {
+                match hashtab {
                     Object::Obj(_, list) => {
                         for obj in list {
                             match obj {
-                                Object::List(_, list) => {
-                                    list.for_each(|t : &Object, v: &Object| keyvals.push((t.clone(), v.clone())));
+                                Object::List(_, ref list) => {
+                                    list.iter().for_each(|(t, v)| keyvals.push((t.clone(), v.clone())));
                                 }
                                 _ => ()
                             }
                         }
                     }
                     _ => ()
-                };*/
+                };
                 let res = Object::env(locked, enclos, frame, keyvals);
                 if !attr.is_null() {
                     //res.set_attr(attr);
