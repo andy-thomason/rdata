@@ -2,8 +2,10 @@ use num_traits::FromPrimitive;
 use std::rc::Rc;
 
 mod reader;
+mod writer;
 
 pub use reader::Reader;
+pub use writer::{Writer, WriteOptions};
 
 // see https://github.com/wch/r-source/blob/trunk/src/include/Rinternals.h
 // http://www.maths.lth.se/matstat/staff/nader/stint/R_Manuals/R-ints.pdf
@@ -13,6 +15,8 @@ pub use reader::Reader;
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Extra attributes for an object.
+/// These are relatively rare and so have a separate structure.
 #[derive(PartialEq, Clone)]
 pub struct Extras {
     // Symbol eg. "x"
@@ -122,6 +126,58 @@ pub enum Obj {
     BaseNamespace(Obe),
     EmptyEnv(Obe),
     BaseEnv(Obe),
+}
+
+impl From<()> for Obj {
+    fn from(_: ()) -> Obj {
+       Obj::Nil(None)
+    }
+}
+
+/// Generate a scalar integer.
+/// Example:
+/// ```
+/// ```
+impl From<i32> for Obj {
+    fn from(val: i32) -> Obj {
+       Obj::Int(None, vec![val])
+    }
+}
+
+impl From<f64> for Obj {
+    fn from(val: f64) -> Obj {
+       Obj::Real(None, vec![val])
+    }
+}
+
+impl From<&String> for Obj {
+    fn from(val: &String) -> Obj {
+       Obj::Char(None, val.clone())
+    }
+}
+
+impl From<String> for Obj {
+    fn from(val: String) -> Obj {
+       Obj::Char(None, val)
+    }
+}
+
+impl From<&str> for Obj {
+    fn from(val: &str) -> Obj {
+       Obj::sym(val)
+    }
+}
+
+impl From<Vec<i32>> for Obj {
+    fn from(val: Vec<i32>) -> Obj {
+       Obj::Int(None, val)
+    }
+}
+
+impl From<Vec<f64>> for Obj {
+    fn from(val: Vec<f64>) -> Obj {
+       Obj::Real(None, val)
+    }
 }
 
 impl std::fmt::Debug for Obj {

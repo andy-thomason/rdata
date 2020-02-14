@@ -238,10 +238,6 @@ impl<R: Read> Reader<R> {
 
     pub fn read_object(&mut self) -> Result<Obj> {
         let flags = self.integer()?;
-        self.read_object_with_flags(flags)
-    }
-
-    pub fn read_object_with_flags(&mut self, flags: i32) -> Result<Obj> {
         let objtype = flags & 0xff;
         let levels = flags >> 12;
         let is_obj = (flags & 0x100) != 0;
@@ -333,9 +329,7 @@ impl<R: Read> Reader<R> {
             /*Builtin*/
             {
                 let length = self.integer()? as usize;
-                println!("len={}", length);
                 let instr = self.string(length)?;
-                println!("instr={}", instr);
                 Obj::Builtin(None, instr)
             }
             9 =>
@@ -611,6 +605,7 @@ mod tests {
 
     #[test]
     fn list_val() {
+        // list(1)
         let obj = read_ascii("A 2 197636 131840 19 1 14 1 1");
         assert_eq!(
             obj,
@@ -620,6 +615,8 @@ mod tests {
 
     #[test]
     fn named_list_val() {
+        // list(a=1)
+        // list of objects with a "names" attribute.
         let obj =
             read_ascii("A 2 197636 131840 531 1 14 1 1 1026 1 262153 5 names 16 1 262153 1 a 254");
         let names = Obj::strings(vec!["a"]);
