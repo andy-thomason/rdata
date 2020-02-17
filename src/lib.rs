@@ -9,7 +9,6 @@ pub use writer::{Writer, WriteOptions};
 
 // see https://github.com/wch/r-source/blob/trunk/src/include/Rinternals.h
 // http://www.maths.lth.se/matstat/staff/nader/stint/R_Manuals/R-ints.pdf
-// https://github.com/wch/r-source/blob/trunk/src/main/serialize.c
 
 
 pub type Error = Box<dyn std::error::Error>;
@@ -164,7 +163,14 @@ impl From<String> for Obj {
 
 impl From<&str> for Obj {
     fn from(val: &str) -> Obj {
-       Obj::sym(val)
+        Obj::Str(None, vec![Obj::Char(None, val.to_string())])
+    }
+}
+
+impl From<&[&str]> for Obj {
+    fn from(val: &[&str]) -> Obj {
+        let strings : Vec<_> = val.iter().map(|s| Obj::Char(None, s.to_string())).collect();
+        Obj::Str(None, strings)
     }
 }
 
@@ -388,7 +394,7 @@ impl Obj {
         }
     }
 
-    pub fn add_attr(&mut self, name: &str, object: Obj) {
+    pub fn add_attr<T : Into<Obj>>(&mut self, name: &str, object: T) {
         let extras = self.extras_mut();
         if extras.is_none() {
             *extras = Extras::obe();
@@ -398,7 +404,7 @@ impl Obj {
             if extras.attr.is_null() {
                 extras.attr = Obj::List(None, Vec::new());
             }
-            extras.attr.append_to_list(name, object);
+            extras.attr.append_to_list(name, object.into());
         }
     }
 
