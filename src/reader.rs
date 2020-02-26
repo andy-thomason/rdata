@@ -640,7 +640,7 @@ mod tests {
     //     assert_eq!(obj, Nil(None));
     // }
 
-    #[test]
+    /*#[test]
     fn s4() {
         let obj = read_ascii("A 2 197636 131840 66329 1026 1 262153 4 name 16 1 262153 6 Hadley 1026 1 262153 3 age 14 1 31 1026 1 262153 5 class 528 1 262153 6 Person 1026 1 262153 7 package 16 1 262153 10 .GlobalEnv 254 254");
         let mut exp = Obj::S4(None);
@@ -648,7 +648,7 @@ mod tests {
         exp.add_attr("age", 31.);
         exp.add_attr("class", "Person");
         assert_eq!(obj, exp);
-    }
+    }*/
 
     #[test]
     fn bin() {

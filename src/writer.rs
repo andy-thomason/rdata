@@ -1,7 +1,7 @@
 
 use std::io::Write;
 
-use crate::{Obj, Result, Obe, Error, Symbol, Env};
+use crate::{Obj, Result, Obe, Extras, Error, Symbol, Env};
 
 pub struct WriteOptions {
     is_ascii: bool,
@@ -140,6 +140,7 @@ impl<W : Write> Writer<W> {
                     self.dest.write(&format!("\\{:03o}", ch).as_bytes())?;
                 }
             }
+            self.dest.write(b"\n")?;
         } else {
             self.dest.write(bytes)?;
         }
@@ -148,34 +149,37 @@ impl<W : Write> Writer<W> {
 
     // Write the start of an object.
     fn write_flags(&mut self, obe: &Obe, t: i32) -> Result<()> {
-        self.integer(t | match obe {
-            &Some(ref extras) => {
-                let mut bits = extras.levels << 12;
-                if extras.is_obj {
-                    bits |= 0x100;
-                }
-                if !extras.attr.is_null() {
-                    bits |= 0x200;
-                }
-                if !extras.tag.is_null() {
-                    bits |= 0x400;
-                }
-                bits
-            }
-            _ => 0
-        })?;
-        match obe {
-            &Some(ref extras) => {
-                if !extras.attr.is_null() {
-                    self.write_object(&extras.attr)?;
-                }
-                if !extras.tag.is_null() {
-                    self.write_object(&extras.tag)?;
-                }
-                Ok(())
-            }
-            _ => Ok(())
+        if let Some(ref extras) = obe {
+            self.write_bits(t, &extras.tag, &extras)
+        } else {
+            self.integer(t)
         }
+    }
+
+    fn write_bits(&mut self, t: i32, tag: &Obj, extras: &Extras) -> Result<()> {
+        let mut bits = extras.levels << 12;
+        if extras.is_obj {
+            bits |= 0x100;
+        }
+        if !extras.attr.is_null() {
+            bits |= 0x200;
+        }
+        if !tag.is_null() {
+            bits |= 0x400;
+        }
+        self.integer(bits | t)
+    }
+
+    fn write_attr(&mut self, obe: &Obe) -> Result<()> {
+        if let Some(ref extras) = obe {
+            if !extras.attr.is_null() {
+                self.write_object(&extras.attr)?;
+            }
+            if !extras.tag.is_null() {
+                self.write_object(&extras.tag)?;
+            }
+        }
+        Ok(())
     }
 
     // Write a symbol.
@@ -186,23 +190,56 @@ impl<W : Write> Writer<W> {
     }
 
     // Write an environment (stack frame etc).
-    fn write_env(&mut self, _obe: &Obe, _val: &Env) -> Result<()> {
+    fn write_env(&mut self, _obe: &Obe, val: &Env) -> Result<()> {
         // This is quite complex as the hash table must match the algorithm in the
         // R source code.
         //panic!("not implemented");
-        self.integer(4)
-        //self.write_object(&Obj::from(val.name))
+        self.integer(4)?;
+        self.integer(if val.locked {1} else {0})?;
+        self.write_object(&val.enclos)?;
+        self.write_object(&val.frame)?;
+        self.write_object(&Obj::List(None, vec![(Obj::null(), Obj::null()); 29]))?;
+        self.write_object(&Obj::null())
     }
 
     // Write a linked list.
-    fn write_list(&mut self, _obe: &Obe, _val: &Vec<(Obj, Obj)>, t: i32) -> Result<()> {
-        self.integer(t | 0x200)?;
-        /*for (t, o) in val {
-            if !t.is_null() {
-
+    // For convenience, we don't store the linked lists as such but as vectors
+    // of tags and objects.
+    fn write_list(&mut self, obe: &Obe, val: &Vec<(Obj, Obj)>, t: i32) -> Result<()> {
+        println!("wl={:?}", val);
+        if !val.is_empty() {
+            // First attr comes from the object itself, but the tag comes
+            // from the list.
+            if let Some(ref extras) = obe {
+                self.write_bits(t, &val[0].0, &extras)?;
+            } else {
+                self.integer(t | 0x400)?;
             }
-        }*/
-        Ok(())
+            self.write_object(&val[0].0)?;
+            self.write_object(&val[0].1)?;
+
+            let e = Extras::new();
+            for (tag, o) in val.iter().skip(1) {
+                // write a LISTSXP element
+                self.write_bits(2, tag, &e)?;
+                // write the tag
+                self.write_object(&tag)?;
+                // write the CAR
+                self.write_object(&o)?;
+            }
+        }
+        // write a null element.
+        self.integer(254)
+    }
+
+    fn get_char_flags(val: &str) -> i32 {
+        if val.as_bytes().iter().any(|&x| x >= 0x80) {
+            // UTF8
+            9 | (0x08<<12)
+        } else {
+            // ASCII
+            9 | (0x40<<12)
+        }
     }
 
     // Write a single string.
@@ -222,7 +259,7 @@ impl<W : Write> Writer<W> {
         for i in val {
             self.integer(i.to_i32())?;
         }
-        Ok(())
+        self.write_attr(&obe)
     }
 
     // Write a floating point vector.
@@ -235,7 +272,7 @@ impl<W : Write> Writer<W> {
         for &i in val {
             self.real(i)?;
         }
-        Ok(())
+        self.write_attr(&obe)
     }
 
     // Write a complex vector.
@@ -248,7 +285,7 @@ impl<W : Write> Writer<W> {
             self.real(i.0)?;
             self.real(i.1)?;
         }
-        Ok(())
+        self.write_attr(&obe)
     }
 
     // Write a vector of objects.
@@ -260,7 +297,7 @@ impl<W : Write> Writer<W> {
         for obj in val {
             self.write_object(obj)?;
         }
-        Ok(())
+        self.write_attr(&obe)
     }
 
     // Write a raw object.
@@ -291,7 +328,7 @@ impl<W : Write> Writer<W> {
             Obj::Dot(ref obe, ref val) => self.write_list(obe, val, 17),
             Obj::Special(ref obe, ref val) => self.write_char(obe, val, 7),
             Obj::Builtin(ref obe, ref val) => self.write_char(obe, val, 8),
-            Obj::Char(ref obe, ref val) => self.write_char(obe, val, 9),
+            Obj::Char(ref obe, ref val) => self.write_char(obe, val, Self::get_char_flags(val)),
             Obj::Logical(ref obe, ref val) => self.write_int(obe, val, 10),
             Obj::Int(ref obe, ref val) => self.write_int(obe, val, 13),
             Obj::Real(ref obe, ref val) => self.write_real(obe, val),
@@ -333,7 +370,28 @@ mod tests {
     }
 
     #[test]
+    fn sym() {
+        // saveRDS(as.symbol("x"), stdout(), ascii=TRUE)
+        let obj = Obj::sym("x");
+        let s = write_ascii(&obj);
+        assert_eq!(s, "A\n2\n197636\n131840\n1\n262153\n1\nx\n");
+    }
+
+    /*#[test]
+    fn env() {
+        // saveRDS(new.env(), stdout(), ascii=TRUE)
+        let locked = false;
+        let enclos = Obj::Global(None);
+        let frame = Obj::null();
+        let keyvals = Vec::new();
+        let obj = Obj::env(locked, enclos, frame, keyvals);
+        let s = write_ascii(&obj);
+        assert_eq!(s, "A\n2\n197636\n131840\n4\n0\n253\n254\n19\n29\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n");
+    }*/
+
+    #[test]
     fn int() {
+        // saveRDS(c(1L, 2L, 3L), stdout(), ascii=TRUE)
         let obj = Obj::integer(vec![1, 2, 3]);
         let s = write_ascii(&obj);
         assert_eq!(s, "A\n2\n197636\n131840\n13\n3\n1\n2\n3\n");
@@ -341,9 +399,61 @@ mod tests {
 
     #[test]
     fn real() {
+        // saveRDS(c(1, 2, 3), stdout(), ascii=TRUE)
         let obj = Obj::real(vec![1., 2., 3.]);
         let s = write_ascii(&obj);
         assert_eq!(s, "A\n2\n197636\n131840\n14\n3\n1\n2\n3\n");
+    }
+
+    #[test]
+    fn attr() {
+        // saveRDS(structure(c(1, 2, 3), x=4), stdout(), ascii=TRUE)
+        let mut obj = Obj::real(vec![1., 2., 3.]);
+        obj.add_attr("x", 4.);
+        let s = write_ascii(&obj);
+        assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n254\n");
+    }
+
+    #[test]
+    fn attrx2() {
+        //saveRDS(structure(c(1, 2, 3), x=4, y=5), stdout(), ascii=TRUE)
+        let mut obj = Obj::real(vec![1., 2., 3.]);
+        obj.add_attr("x", 4.);
+        obj.add_attr("y", 5.);
+        let s = write_ascii(&obj);
+        assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n1026\n1\n262153\n1\ny\n14\n1\n5\n254\n");
+    }
+
+    #[test]
+    fn attr_nested() {
+        //saveRDS(structure(c(1, 2, 3), x=4, y=structure(5, z=6)), stdout(), ascii=TRUE)
+        let mut obj = Obj::real(vec![1., 2., 3.]);
+        obj.add_attr("x", 4.);
+        let mut y = Obj::real(vec![5.]);
+        y.add_attr("z", 6.);
+        obj.add_attr("y", y);
+        let s = write_ascii(&obj);
+        assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n1026\n1\n262153\n1\ny\n526\n1\n5\n1026\n1\n262153\n1\nz\n14\n1\n6\n254\n254\n");
+    }
+
+    #[test]
+    fn unicode() {
+        // saveRDS("😀", stdout(), ascii=TRUE)
+        let s = write_ascii(&Obj::from("😀"));
+        // note: needs 0x8009 (UTF8), not 0x40009 (ASCII)
+        assert_eq!(s, "A\n2\n197636\n131840\n16\n1\n32777\n4\n\\360\\237\\230\\200\n");
+    }
+
+    #[test]
+    fn data_frame() {
+        //saveRDS(data.frame(a = c(1, 2)), stdout(), ascii = TRUE)
+        let obj = Obj::data_frame(
+            vec![Obj::real(vec![1., 2.])],
+            vec!["a"],
+        );
+        eprintln!("{:?}", &obj);
+        let s = write_ascii(&obj);
+        assert_eq!(s, "A\n2\n197636\n131840\n787\n1\n14\n2\n1\n2\n1026\n1\n262153\n5\nnames\n16\n1\n262153\n1\na\n1026\n1\n262153\n9\nrow.names\n13\n2\nNA\n-2\n1026\n1\n262153\n5\nclass\n16\n1\n262153\n10\ndata.frame\n254\n");
     }
 
 }
