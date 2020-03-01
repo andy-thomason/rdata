@@ -1,7 +1,10 @@
 use std::io::Read;
 
 use crate::{Error, Extras, Obe, Obj, Result};
+use crate::obj::{NA_INTEGER};
 
+// see https://github.com/wch/r-source/blob/trunk/src/include/Rinternals.h
+// http://www.maths.lth.se/matstat/staff/nader/stint/R_Manuals/R-ints.pdf
 // https://github.com/wch/r-source/blob/trunk/src/main/serialize.c
 
 pub struct Reader<R: Read> {
@@ -91,7 +94,7 @@ impl<R: Read> Reader<R> {
         if self.is_ascii {
             self.word()?;
             if self.buf == "NA" {
-                Ok(-0x80000000)
+                Ok(NA_INTEGER)
             } else {
                 Ok(self.buf.parse::<i32>()?)
             }
@@ -282,7 +285,7 @@ impl<R: Read> Reader<R> {
 
             2 => {
                 let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
-                Obj::List(None, list)
+                Obj::PairList(None, list)
             }
             3 => {
                 let list = self.dotted_list(has_attr, has_tag, is_obj, 0)?;
@@ -308,10 +311,10 @@ impl<R: Read> Reader<R> {
                 let attr = self.read_object()?;
                 let mut keyvals = Vec::new();
                 match hashtab {
-                    Obj::Obj(_, list) => {
+                    Obj::List(_, list) => {
                         for obj in list {
                             match obj {
-                                Obj::List(_, ref list) => {
+                                Obj::PairList(_, ref list) => {
                                     list.iter()
                                         .for_each(|(t, v)| keyvals.push((t.clone(), v.clone())));
                                 }
@@ -382,7 +385,12 @@ impl<R: Read> Reader<R> {
                 let length = self.integer()? as usize;
                 let mut data = Vec::with_capacity(length);
                 for _ in 0..length {
-                    data.push(self.read_object()?);
+                    let obj = self.read_object()?;
+                    if let Obj::Char(_, s) = obj {
+                        data.push(s);
+                    } else {
+                        return Err(Error::from("string object does not contain chars."));
+                    }
                 }
                 Obj::Str(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
@@ -392,7 +400,7 @@ impl<R: Read> Reader<R> {
                 for _ in 0..length {
                     data.push(self.read_object()?);
                 }
-                Obj::Obj(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Obj::List(self.extras(has_attr, has_tag, is_obj, levels)?, data)
             }
             20 => {
                 let length = self.integer()? as usize;
@@ -498,7 +506,7 @@ mod tests {
     fn sym_val() {
         // Actually a sym (1 262153 1 x) and a ref (511)
         let obj = read_ascii("A 2 197636 131840 19 2 1 262153 1 x 511");
-        assert_eq!(obj, Obj(None, vec![Obj::sym("x"), Obj::sym("x")]));
+        assert_eq!(obj, List(None, vec![Obj::sym("x"), Obj::sym("x")]));
     }
 
     #[test]
@@ -536,7 +544,7 @@ mod tests {
     fn list_val() {
         // list(1)
         let obj = read_ascii("A 2 197636 131840 19 1 14 1 1");
-        assert_eq!(obj, Obj::Obj(None, vec![Obj::Real(None, vec![1.])]));
+        assert_eq!(obj, Obj::List(None, vec![Obj::Real(None, vec![1.])]));
     }
 
     #[test]
@@ -546,7 +554,7 @@ mod tests {
         let obj =
             read_ascii("A 2 197636 131840 531 1 14 1 1 1026 1 262153 5 names 16 1 262153 1 a 254");
         let names = Obj::strings(vec!["a"]);
-        let mut cmp = Obj::Obj(None, vec![Obj::Real(None, vec![1.])]);
+        let mut cmp = Obj::List(None, vec![Obj::Real(None, vec![1.])]);
         cmp.add_attr("names", names);
         assert_eq!(obj, cmp);
     }

@@ -5,12 +5,14 @@ use crate::{Obj, Result, Obe, Extras, Error, Symbol, Env};
 
 pub struct WriteOptions {
     is_ascii: bool,
+    is_ascii_stream: bool,
 }
 
 impl WriteOptions {
     pub fn new() -> Self {
         Self {
             is_ascii: false,
+            is_ascii_stream: false,
         }
     }
 
@@ -40,7 +42,7 @@ impl ToI32 for bool {
 /// let buf = Vec::new();
 /// let mut opt = WriteOptions::new();
 /// let mut dest = Writer::try_new(buf, opt).unwrap();
-/// assert_eq!(dest.into_inner(), [66, 10, 0, 0, 0, 2, 0, 3, 4, 4, 0, 2, 3, 0])
+/// assert_eq!(dest.into_inner(), [88, 10, 0, 0, 0, 2, 0, 3, 4, 4, 0, 2, 3, 0])
 /// ```
 pub struct Writer<W> {
     dest: W,
@@ -56,7 +58,7 @@ impl<W : Write> Writer<W> {
     /// let buf = Vec::new();
     /// let mut opt = WriteOptions::new();
     /// let mut dest = Writer::try_new(buf, opt).unwrap();
-    /// assert_eq!(dest.into_inner(), [66, 10, 0, 0, 0, 2, 0, 3, 4, 4, 0, 2, 3, 0])
+    /// assert_eq!(dest.into_inner(), [88, 10, 0, 0, 0, 2, 0, 3, 4, 4, 0, 2, 3, 0])
     /// ```
     pub fn try_new(dest: W, opt: WriteOptions) -> Result<Self> {
         let mut w = Self {
@@ -66,7 +68,7 @@ impl<W : Write> Writer<W> {
         if w.opt.is_ascii {
             w.dest.write(&[b'A', b'\n'])?;
         } else {
-            w.dest.write(&[b'B', b'\n'])?;
+            w.dest.write(&[b'X', b'\n'])?;
         }
         w.integer(2)?;
         w.integer(197636)?;
@@ -82,7 +84,7 @@ impl<W : Write> Writer<W> {
     /// let buf = Vec::new();
     /// let mut opt = WriteOptions::new();
     /// let mut dest = Writer::try_new(buf, opt).unwrap();
-    /// assert_eq!(dest.into_inner(), [66, 10, 0, 0, 0, 2, 0, 3, 4, 4, 0, 2, 3, 0])
+    /// assert_eq!(dest.into_inner(), [88, 10, 0, 0, 0, 2, 0, 3, 4, 4, 0, 2, 3, 0])
     /// ```
     pub fn into_inner(self) -> W {
         self.dest
@@ -186,7 +188,9 @@ impl<W : Write> Writer<W> {
     fn write_sym(&mut self, obe: &Obe, val: &Symbol) -> Result<()> {
         // TODO: handle refs.
         self.write_flags(&obe, 1)?;
-        self.write_object(&Obj::from(&val.name))
+        self.write_flags(&obe, Self::get_char_flags(&val.name))?;
+        self.string(&val.name)?;
+        Ok(())
     }
 
     // Write an environment (stack frame etc).
@@ -198,7 +202,7 @@ impl<W : Write> Writer<W> {
         self.integer(if val.locked {1} else {0})?;
         self.write_object(&val.enclos)?;
         self.write_object(&val.frame)?;
-        self.write_object(&Obj::List(None, vec![(Obj::null(), Obj::null()); 29]))?;
+        self.write_object(&Obj::PairList(None, vec![(Obj::null(), Obj::null()); 29]))?;
         self.write_object(&Obj::null())
     }
 
@@ -300,13 +304,26 @@ impl<W : Write> Writer<W> {
         self.write_attr(&obe)
     }
 
+    // Write a vector of objects.
+    fn write_str(&mut self, obe: &Obe, val: &Vec<String>, t: i32) -> Result<()> {
+        self.write_flags(&obe, t)?;
+        let len32 = val.len() as i32;
+        if len32 as usize != val.len() { return Err(Error::from("vector too long for R format")); }
+        self.integer(len32)?;
+        for s in val {
+            self.integer(Self::get_char_flags(s))?;
+            self.string(s)?;
+        }
+        self.write_attr(&obe)
+    }
+
     // Write a raw object.
     fn write_raw(&mut self, obe: &Obe, val: &Vec<u8>) -> Result<()> {
         self.write_flags(&obe, 24)?;
         let len32 = val.len() as i32;
         if len32 as usize != val.len() { return Err(Error::from("vector too long for R format")); }
         self.integer(len32)?;
-        if self.opt.is_ascii {
+        if self.opt.is_ascii_stream {
             for byte in val {
                 self.dest.write(&format!("{:02x}\n", byte).as_bytes())?;
             }
@@ -321,7 +338,7 @@ impl<W : Write> Writer<W> {
         match obj {
             Obj::Sym(ref obe, ref val) => self.write_sym(obe, val),
             Obj::Env(ref obe, ref val) => self.write_env(obe, val),
-            Obj::List(ref obe, ref val) => self.write_list(obe, val, 2),
+            Obj::PairList(ref obe, ref val) => self.write_list(obe, val, 2),
             Obj::Closure(ref obe, ref val) => self.write_list(obe, val, 3),
             Obj::Promise(ref obe, ref val) => self.write_list(obe, val, 5),
             Obj::Lang(ref obe, ref val) => self.write_list(obe, val, 6),
@@ -333,8 +350,8 @@ impl<W : Write> Writer<W> {
             Obj::Int(ref obe, ref val) => self.write_int(obe, val, 13),
             Obj::Real(ref obe, ref val) => self.write_real(obe, val),
             Obj::Cplx(ref obe, ref val) => self.write_cplx(obe, val),
-            Obj::Str(ref obe, ref val) => self.write_obj(obe, val, 16),
-            Obj::Obj(ref obe, ref val) => self.write_obj(obe, val, 19),
+            Obj::Str(ref obe, ref val) => self.write_str(obe, val, 16),
+            Obj::List(ref obe, ref val) => self.write_obj(obe, val, 19),
             Obj::Expr(ref obe, ref val) => self.write_obj(obe, val, 20),
             Obj::Bytecode(ref _obe) => Err(Error::from("Bytecode not supported yet.")),
             Obj::ExtPtr(ref _obe) => Err(Error::from("ExtPtr not supported yet.")),
@@ -359,21 +376,108 @@ impl<W : Write> Writer<W> {
 mod tests {
     use super::Obj;
     use super::{Writer, WriteOptions};
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+    use crate::api::*;
+    use crate::{c, structure, Result};
+    use std::convert::Into;
 
-    fn write_ascii(obj: &Obj) -> String {
+    // Make an RPC call to R
+    // This is a polymorphic call.
+    fn call_r<T : Into<Obj>>(obj: T, s: &str) {
+        let obj = obj.into();
+        call_ascii(&obj, s);
+        call_binary(&obj, s);
+    }
+    
+    fn call_ascii(obj: &Obj, s: &str) {
+        let mut child = Command::new("Rscript")
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Is Rscript in the path? Try installing R.");
+        {
+            let stdin = child.stdin.as_mut().expect("failed to get stdin");
+            let val = write_ascii(&obj, false);
+            //eprintln!("{}", val);
+            write!(stdin, "cat(deparse(readRDS(stdin())))\n{}", val).unwrap();
+        }
+        let output = child
+            .wait_with_output()
+            .expect("R probably crashed");
+        assert_eq!(String::from_utf8_lossy(output.stdout.as_slice()), s);
+    }
+
+    fn call_binary(obj: &Obj, s: &str) {
+        let mut child = Command::new("R")
+            .arg("--slave")
+            .arg("-e")
+            .arg("cat(deparse(readRDS(file(\"stdin\", \"rb\"))))")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Is Rscript in the path?");
+        {
+            let stdin = child.stdin.as_mut().expect("failed to get stdin");
+            let mut binvec = Vec::new();
+            binvec.write(write_binary(&obj).as_slice()).unwrap();
+            stdin.write_all(binvec.as_slice()).unwrap();
+        }
+        let output = child
+            .wait_with_output()
+            .expect("R probably crashed");
+        assert_eq!(String::from_utf8_lossy(output.stdout.as_slice()), s);
+    }
+
+    #[test]
+    fn test_rpc() -> Result<()> {
+        // Call R and deparse the result. Compare this with the expected value.
+        call_r(NULL, "NULL");
+        call_r(TRUE, "TRUE");
+        call_r(FALSE, "FALSE");
+        call_r((), "NULL");
+        call_r(1., "1");
+        call_r(1, "1L");
+        call_r("xyz", "\"xyz\"");
+        call_r(c!("abc", "xyz"), "c(\"abc\", \"xyz\")");
+        //call_r(c!(c!("abc", "xyz"), c!("def", "ghi")), "c(\"abc\", \"xyz\")");
+        call_r(c!(1., 2.), "c(1, 2)");
+        call_r(c!(1, 2), "1:2");
+        call_r(true, "TRUE");
+        call_r(false, "FALSE");
+        call_r(b"hello" as &[u8], "as.raw(c(0x68, 0x65, 0x6c, 0x6c, 0x6f))");
+        call_r(as_raw(&c!(0x68, 0x65, 0x6c, 0x6c, 0x6f))?, "as.raw(c(0x68, 0x65, 0x6c, 0x6c, 0x6f))");
+        call_r(structure!(c!(1., 2., 3.), x=4., y="y"), "structure(c(1, 2, 3), x = 4, y = \"y\")");
+        Ok(())
+    }
+
+    fn write_ascii(obj: &Obj, is_ascii_stream: bool) -> String {
         let buf = Vec::new();
         let mut opt = WriteOptions::new();
         opt.is_ascii = true;
+        opt.is_ascii_stream = is_ascii_stream;
         let mut dest = Writer::try_new(buf, opt).unwrap();
         dest.write_object(&obj).unwrap();
         String::from_utf8(dest.into_inner()).unwrap()
+    }
+
+    fn write_binary(obj: &Obj) -> Vec<u8> {
+        let buf = Vec::new();
+        let mut opt = WriteOptions::new();
+        opt.is_ascii = false;
+        let mut dest = Writer::try_new(buf, opt).unwrap();
+        dest.write_object(&obj).unwrap();
+        let res = dest.into_inner();
+        //println!("res={:02x?}", res);
+        res
     }
 
     #[test]
     fn sym() {
         // saveRDS(as.symbol("x"), stdout(), ascii=TRUE)
         let obj = Obj::sym("x");
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n1\n262153\n1\nx\n");
     }
 
@@ -385,7 +489,7 @@ mod tests {
         let frame = Obj::null();
         let keyvals = Vec::new();
         let obj = Obj::env(locked, enclos, frame, keyvals);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n4\n0\n253\n254\n19\n29\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n254\n");
     }*/
 
@@ -393,7 +497,7 @@ mod tests {
     fn int() {
         // saveRDS(c(1L, 2L, 3L), stdout(), ascii=TRUE)
         let obj = Obj::integer(vec![1, 2, 3]);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n13\n3\n1\n2\n3\n");
     }
 
@@ -401,7 +505,7 @@ mod tests {
     fn real() {
         // saveRDS(c(1, 2, 3), stdout(), ascii=TRUE)
         let obj = Obj::real(vec![1., 2., 3.]);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n14\n3\n1\n2\n3\n");
     }
 
@@ -410,7 +514,7 @@ mod tests {
         // saveRDS(structure(c(1, 2, 3), x=4), stdout(), ascii=TRUE)
         let mut obj = Obj::real(vec![1., 2., 3.]);
         obj.add_attr("x", 4.);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n254\n");
     }
 
@@ -420,7 +524,7 @@ mod tests {
         let mut obj = Obj::real(vec![1., 2., 3.]);
         obj.add_attr("x", 4.);
         obj.add_attr("y", 5.);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n1026\n1\n262153\n1\ny\n14\n1\n5\n254\n");
     }
 
@@ -432,14 +536,14 @@ mod tests {
         let mut y = Obj::real(vec![5.]);
         y.add_attr("z", 6.);
         obj.add_attr("y", y);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n1026\n1\n262153\n1\ny\n526\n1\n5\n1026\n1\n262153\n1\nz\n14\n1\n6\n254\n254\n");
     }
 
     #[test]
     fn unicode() {
         // saveRDS("😀", stdout(), ascii=TRUE)
-        let s = write_ascii(&Obj::from("😀"));
+        let s = write_ascii(&Obj::from("😀"), false);
         // note: needs 0x8009 (UTF8), not 0x40009 (ASCII)
         assert_eq!(s, "A\n2\n197636\n131840\n16\n1\n32777\n4\n\\360\\237\\230\\200\n");
     }
@@ -452,7 +556,7 @@ mod tests {
             vec!["a"],
         );
         eprintln!("{:?}", &obj);
-        let s = write_ascii(&obj);
+        let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n787\n1\n14\n2\n1\n2\n1026\n1\n262153\n5\nnames\n16\n1\n262153\n1\na\n1026\n1\n262153\n9\nrow.names\n13\n2\nNA\n-2\n1026\n1\n262153\n5\nclass\n16\n1\n262153\n10\ndata.frame\n254\n");
     }
 
