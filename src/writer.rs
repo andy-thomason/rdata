@@ -353,13 +353,7 @@ impl<W : Write> Writer<W> {
             Obj::Str(ref obe, ref val) => self.write_str(obe, val, 16),
             Obj::List(ref obe, ref val) => self.write_obj(obe, val, 19),
             Obj::Expr(ref obe, ref val) => self.write_obj(obe, val, 20),
-            Obj::Bytecode(ref _obe) => Err(Error::from("Bytecode not supported yet.")),
-            Obj::ExtPtr(ref _obe) => Err(Error::from("ExtPtr not supported yet.")),
-            Obj::WeakRef(ref _obe) => Err(Error::from("WeakRef not supported yet.")),
             Obj::Raw(ref obe, ref val) => self.write_raw(obe, val),
-            Obj::S4(ref _obe) => Err(Error::from("S4 not supported yet.")),
-            Obj::New(ref _obe) => Err(Error::from("New not supported yet.")),
-            Obj::Free(ref _obe) => Err(Error::from("Free not supported yet.")),
             Obj::Nil(ref obe) => self.write_flags(&obe, 254),
             Obj::Global(ref obe) => self.write_flags(&obe, 253),
             Obj::Unbound(ref obe) => self.write_flags(&obe, 252),
@@ -441,13 +435,12 @@ mod tests {
         call_r(1, "1L");
         call_r("xyz", "\"xyz\"");
         call_r(c!("abc", "xyz"), "c(\"abc\", \"xyz\")");
-        //call_r(c!(c!("abc", "xyz"), c!("def", "ghi")), "c(\"abc\", \"xyz\")");
         call_r(c!(1., 2.), "c(1, 2)");
         call_r(c!(1, 2), "1:2");
         call_r(true, "TRUE");
         call_r(false, "FALSE");
         call_r(b"hello" as &[u8], "as.raw(c(0x68, 0x65, 0x6c, 0x6c, 0x6f))");
-        call_r(as_raw(&c!(0x68, 0x65, 0x6c, 0x6c, 0x6f))?, "as.raw(c(0x68, 0x65, 0x6c, 0x6c, 0x6f))");
+        //call_r(as_raw(c!(0x68, 0x65, 0x6c, 0x6c, 0x6f)).unwrap(), "as.raw(c(0x68, 0x65, 0x6c, 0x6c, 0x6f))");
         call_r(structure!(c!(1., 2., 3.), x=4., y="y"), "structure(c(1, 2, 3), x = 4, y = \"y\")");
         Ok(())
     }

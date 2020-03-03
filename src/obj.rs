@@ -106,12 +106,12 @@ pub enum Obj {
     Builtin(Obe, String),
 
     // Yet to be done.
-    Bytecode(Obe),
+    /*Bytecode(Obe),
     ExtPtr(Obe),
     WeakRef(Obe),
     S4(Obe),
     New(Obe),
-    Free(Obe),
+    Free(Obe),*/
 
     // Special values.
     Nil(Obe),
@@ -121,90 +121,6 @@ pub enum Obj {
     BaseNamespace(Obe),
     EmptyEnv(Obe),
     BaseEnv(Obe),
-}
-
-impl From<()> for Obj {
-    fn from(_: ()) -> Obj {
-       Obj::Nil(None)
-    }
-}
-
-/// Generate a scalar integer.
-/// Example:
-/// ```
-/// ```
-impl From<i32> for Obj {
-    fn from(val: i32) -> Obj {
-       Obj::Int(None, vec![val])
-    }
-}
-
-impl From<f64> for Obj {
-    fn from(val: f64) -> Obj {
-       Obj::Real(None, vec![val])
-    }
-}
-
-impl From<bool> for Obj {
-    fn from(val: bool) -> Obj {
-       Obj::Logical(None, vec![val])
-    }
-}
-
-impl From<&String> for Obj {
-    fn from(val: &String) -> Obj {
-       Obj::Str(None, vec![val.clone()])
-    }
-}
-
-impl From<&str> for Obj {
-    fn from(val: &str) -> Obj {
-       Obj::Str(None, vec![val.to_string()])
-    }
-}
-
-impl From<&[&str]> for Obj {
-    fn from(val: &[&str]) -> Obj {
-        let strings : Vec<_> = val.iter().map(|s| s.to_string()).collect();
-        Obj::Str(None, strings)
-    }
-}
-
-impl From<Vec<&str>> for Obj {
-    fn from(val: Vec<&str>) -> Obj {
-        let strings : Vec<_> = val.iter().map(|s| s.to_string()).collect();
-        Obj::Str(None, strings)
-    }
-}
-
-impl From<Vec<i32>> for Obj {
-    fn from(val: Vec<i32>) -> Obj {
-       Obj::Int(None, val)
-    }
-}
-
-impl From<Vec<f64>> for Obj {
-    fn from(val: Vec<f64>) -> Obj {
-       Obj::Real(None, val)
-    }
-}
-
-impl From<Vec<(Obj, Obj)>> for Obj {
-    fn from(val: Vec<(Obj, Obj)>) -> Obj {
-       Obj::PairList(None, val)
-    }
-}
-
-impl From<Vec<Obj>> for Obj {
-    fn from(val: Vec<Obj>) -> Obj {
-       Obj::List(None, val)
-    }
-}
-
-impl From<&[u8]> for Obj {
-    fn from(val: &[u8]) -> Obj {
-       Obj::Raw(None, val.to_vec())
-    }
 }
 
 impl std::fmt::Debug for Obj {
@@ -232,12 +148,6 @@ impl std::fmt::Debug for Obj {
             Obj::List(_, ref val) => write!(f, "Obj({:?})", val),
             Obj::Expr(_, ref val) => write!(f, "Expr({:?})", val),
             Obj::Raw(_, ref val) => write!(f, "Raw({:?})", val),
-            Obj::Bytecode(_) => write!(f, "Bytecode()"),
-            Obj::ExtPtr(_) => write!(f, "ExtPtr()"),
-            Obj::WeakRef(_) => write!(f, "WeakRef()"),
-            Obj::S4(_) => write!(f, "S4()"),
-            Obj::New(_) => write!(f, "New()"),
-            Obj::Free(_) => write!(f, "Free()"),
             Obj::Nil(_) => write!(f, "Nil()"),
             Obj::Global(_) => write!(f, "Global()"),
             Obj::Unbound(_) => write!(f, "Unbound()"),
@@ -293,6 +203,10 @@ impl Obj {
                 .map(|s| s.to_string())
                 .collect(),
         )
+    }
+
+    pub fn string(s: &str) -> Self {
+        Obj::Str(None, vec![s.to_string()])
     }
 
     pub fn sym(chrs: &str) -> Self {
@@ -362,13 +276,7 @@ impl Obj {
             | Obj::Str(ref mut obe, _)
             | Obj::List(ref mut obe, _)
             | Obj::Expr(ref mut obe, _)
-            | Obj::Bytecode(ref mut obe)
-            | Obj::ExtPtr(ref mut obe)
-            | Obj::WeakRef(ref mut obe)
             | Obj::Raw(ref mut obe, _)
-            | Obj::S4(ref mut obe)
-            | Obj::New(ref mut obe)
-            | Obj::Free(ref mut obe)
             | Obj::Nil(ref mut obe)
             | Obj::Global(ref mut obe)
             | Obj::Unbound(ref mut obe)
@@ -398,13 +306,7 @@ impl Obj {
             | Obj::Str(ref obe, _)
             | Obj::List(ref obe, _)
             | Obj::Expr(ref obe, _)
-            | Obj::Bytecode(ref obe)
-            | Obj::ExtPtr(ref obe)
-            | Obj::WeakRef(ref obe)
             | Obj::Raw(ref obe, _)
-            | Obj::S4(ref obe)
-            | Obj::New(ref obe)
-            | Obj::Free(ref obe)
             | Obj::Nil(ref obe)
             | Obj::Global(ref obe)
             | Obj::Unbound(ref obe)
@@ -413,6 +315,11 @@ impl Obj {
             | Obj::EmptyEnv(ref obe)
             | Obj::BaseEnv(ref obe) => obe,
         }
+    }
+
+    pub fn names(mut self, val: Vec<String>) -> Self {
+        self.add_attr("names", Obj::Str(None, val));
+        self
     }
 
     pub fn add_attr<T : Into<Obj>>(&mut self, name: &str, object: T) {

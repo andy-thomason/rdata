@@ -427,7 +427,7 @@ impl<R: Read> Reader<R> {
                     Obj::Raw(self.extras(has_attr, has_tag, is_obj, levels)?, data)
                 }
             }
-            25 => Obj::S4(self.extras(has_attr, has_tag, is_obj, levels)?),
+            //25 => Obj::S4(self.extras(has_attr, has_tag, is_obj, levels)?),
             255 => self.read_ref(flags)?,
             254 => Obj::Nil(None),
             253 => Obj::Global(None),
