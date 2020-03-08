@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use crate::{Error, Extras, Obe, Obj, Result};
-use crate::obj::{NA_INTEGER};
+use crate::obj::{NA_INTEGER, ArrayRef};
 
 // see https://github.com/wch/r-source/blob/trunk/src/include/Rinternals.h
 // http://www.maths.lth.se/matstat/staff/nader/stint/R_Manuals/R-ints.pdf
@@ -349,19 +349,25 @@ impl<R: Read> Reader<R> {
             }
             10 => {
                 let length = self.integer()? as usize;
-                let mut data = Vec::with_capacity(length);
+                let mut data : Vec<bool> = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.integer()? != 0);
                 }
-                Obj::Logical(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Obj::Ary(
+                    self.extras(has_attr, has_tag, is_obj, levels)?,
+                    ArrayRef::from(data.as_slice())
+                )
             }
             13 => {
                 let length = self.integer()? as usize;
-                let mut data = Vec::with_capacity(length);
+                let mut data : Vec<i32> = Vec::with_capacity(length);
                 for _ in 0..length {
                     data.push(self.integer()?);
                 }
-                Obj::Int(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Obj::Ary(
+                    self.extras(has_attr, has_tag, is_obj, levels)?,
+                    ArrayRef::from(data.as_slice())
+                )
             }
             14 => {
                 let length = self.integer()? as usize;
@@ -369,7 +375,10 @@ impl<R: Read> Reader<R> {
                 for _ in 0..length {
                     data.push(self.real()?);
                 }
-                Obj::Real(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                Obj::Ary(
+                    self.extras(has_attr, has_tag, is_obj, levels)?,
+                    ArrayRef::from(data.as_slice())
+                )
             }
             15 => {
                 let length = self.integer()? as usize;
@@ -379,7 +388,11 @@ impl<R: Read> Reader<R> {
                     let im = self.real()?;
                     data.push((re, im));
                 }
-                Obj::Cplx(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                /*Obj::Ary(
+                    self.extras(has_attr, has_tag, is_obj, levels)?,
+                    ArrayRef::from(data.as_slice())
+                )*/
+                Obj::from(())
             }
             16 => {
                 let length = self.integer()? as usize;
@@ -419,12 +432,18 @@ impl<R: Read> Reader<R> {
                             Ok(u8::from_str_radix(self.buf.as_str(), 16).unwrap_or(0))
                         })
                         .collect();
-                    Obj::Raw(self.extras(has_attr, has_tag, is_obj, levels)?, data?)
+                    Obj::Ary(
+                        self.extras(has_attr, has_tag, is_obj, levels)?,
+                        ArrayRef::from(data?.as_slice())
+                    )
                 } else {
                     let mut data = Vec::with_capacity(length);
                     data.resize(length, 0);
                     self.src.read_exact(data.as_mut_slice())?;
-                    Obj::Raw(self.extras(has_attr, has_tag, is_obj, levels)?, data)
+                    Obj::Ary(
+                        self.extras(has_attr, has_tag, is_obj, levels)?,
+                        ArrayRef::from(data.as_slice())
+                    )
                 }
             }
             //25 => Obj::S4(self.extras(has_attr, has_tag, is_obj, levels)?),
@@ -475,20 +494,20 @@ mod tests {
     #[test]
     fn int_val() {
         let obj = read_ascii("A 2 197636 131840 13 1 1");
-        assert_eq!(obj, Obj::Int(None, vec![1]));
+        assert_eq!(obj, Obj::from(vec![1_i32]));
     }
 
     #[test]
     fn real_val() {
         let obj = read_ascii("A 2 197636 131840 14 1 1");
-        assert_eq!(obj, Obj::Real(None, vec![1.]));
+        assert_eq!(obj, Obj::from(vec![1_f64]));
     }
 
-    #[test]
+    /*#[test]
     fn complex_val() {
         let obj = read_ascii("A 2 197636 131840 15 1 1 2");
-        assert_eq!(obj, Obj::Cplx(None, vec![(1., 2.)]));
-    }
+        assert_eq!(obj, Obj::from(vec![(1., 2.)]));
+    }*/
 
     #[test]
     fn null_val() {
@@ -499,7 +518,7 @@ mod tests {
     #[test]
     fn bool_val() {
         let obj = read_ascii("A 2 197636 131840 10 2 1 0");
-        assert_eq!(obj, Obj::Logical(None, vec![true, false]));
+        assert_eq!(obj, Obj::from(vec![true, false]));
     }
 
     #[test]
@@ -512,7 +531,7 @@ mod tests {
     #[test]
     fn raw() {
         let obj = read_ascii("A 2 197636 131840 24 10 00 00 00 00 00 00 00 00 00 00");
-        assert_eq!(obj, Obj::raw(vec![0; 10]))
+        assert_eq!(obj, Obj::from(vec![0_u8; 10]))
     }
 
     #[test]
@@ -520,7 +539,7 @@ mod tests {
         let obj = read_ascii("A 2 197636 131840 6 1 262153 1 + 2 1 262153 1 x 2 14 1 1 254");
         assert_eq!(
             obj,
-            Obj::lang(vec![Obj::sym("+"), Obj::sym("x"), Obj::real(vec![1.])])
+            Obj::lang(vec![Obj::sym("+"), Obj::sym("x"), Obj::from(1.)])
         );
     }
 
@@ -536,7 +555,7 @@ mod tests {
         println!("{:?}", obj);
         assert_eq!(
             obj,
-            Obj::lang(vec![Obj::sym("<-"), Obj::sym("x"), Obj::real(vec![1.])])
+            Obj::lang(vec![Obj::sym("<-"), Obj::sym("x"), Obj::from(1.)])
         );
     }
 
@@ -544,7 +563,7 @@ mod tests {
     fn list_val() {
         // list(1)
         let obj = read_ascii("A 2 197636 131840 19 1 14 1 1");
-        assert_eq!(obj, Obj::List(None, vec![Obj::Real(None, vec![1.])]));
+        assert_eq!(obj, Obj::List(None, vec![Obj::from(1.)]));
     }
 
     #[test]
@@ -553,8 +572,8 @@ mod tests {
         // list of objects with a "names" attribute.
         let obj =
             read_ascii("A 2 197636 131840 531 1 14 1 1 1026 1 262153 5 names 16 1 262153 1 a 254");
-        let names = Obj::strings(vec!["a"]);
-        let mut cmp = Obj::List(None, vec![Obj::Real(None, vec![1.])]);
+        let names = Obj::from("a");
+        let mut cmp = Obj::List(None, vec![Obj::from(1.)]);
         cmp.add_attr("names", names);
         assert_eq!(obj, cmp);
     }
@@ -564,7 +583,7 @@ mod tests {
         let obj = read_ascii("A 2 197636 131840 4 0 253 254 19 29 254 254 254 254 1026 1 262153 1 x 14 1 1 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254 254");
         let enclos = Global(None);
         let frame = Obj::null();
-        let keyvals = vec![(Obj::sym("x"), Obj::real(vec![1.]))];
+        let keyvals = vec![(Obj::sym("x"), Obj::from(1.))];
         let cmp = Obj::env(false, enclos, frame, keyvals);
         assert_eq!(obj, cmp);
     }
@@ -572,8 +591,8 @@ mod tests {
     #[test]
     fn attr() {
         let obj = read_ascii("A 2 197636 131840 526 1 1 1026 1 262153 6 attr-x 14 1 2 254");
-        let mut cmp = Obj::real(vec![1.]);
-        cmp.add_attr("attr-x", Obj::real(vec![2.]));
+        let mut cmp = Obj::from(1.);
+        cmp.add_attr("attr-x", 2.);
         assert_eq!(obj, cmp);
     }
 
@@ -602,7 +621,7 @@ mod tests {
             r#"A 2 197636 131840 787 2 14 1 1 14 1 2 1026 1 262153 5 names 16 2 262153 1 a 262153 1 b 1026 1 262153 9 row.names 13 2 NA -1 1026 1 262153 5 class 16 1 262153 10 data.frame 254"#,
         );
         let cmp = Obj::data_frame(
-            vec![Obj::real(vec![1.]), Obj::real(vec![2.])],
+            vec![Obj::from(1.), Obj::from(2.)],
             vec!["a", "b"],
         );
         assert_eq!(obj, cmp);
@@ -633,8 +652,8 @@ mod tests {
             obj,
             Obj::expr(vec![Obj::lang(vec![
                 Obj::sym("+"),
-                Obj::real(vec![1.]),
-                Obj::real(vec![1.])
+                Obj::from(1.),
+                Obj::from(1.)
             ])])
         );
     }
@@ -662,6 +681,6 @@ mod tests {
     fn bin() {
         let obj = read_bin("580a0000000200030404000203000000000e000000013ff0000000000000");
         println!("bin={:?}", obj);
-        assert_eq!(obj, Real(None, vec![1.0]));
+        assert_eq!(obj, Obj::from(1.0));
     }
 }

@@ -1,6 +1,44 @@
-
 use num_traits::FromPrimitive;
 use std::sync::Arc;
+use std::any::Any;
+
+/// An idiomatic representation of an R object.
+#[derive(PartialEq, Clone)]
+pub enum Obj {
+    // Sym and Env can have muliple references to the same object.
+    Sym(Obe, Arc<Symbol>),
+    Env(Obe, Arc<Env>),
+
+    // Pair lists are lisp-style car/cdr pairs of symbol + object.
+    // Design question: should these be structures like Sym and Env?
+    PairList(Obe, Vec<(Obj, Obj)>),
+    Closure(Obe, Vec<(Obj, Obj)>),
+    Promise(Obe, Vec<(Obj, Obj)>),
+    Lang(Obe, Vec<(Obj, Obj)>),
+    Dot(Obe, Vec<(Obj, Obj)>),
+
+    // These are vectors.
+    // Design question: Should these be Arcs?
+    Char(Obe, String),
+    Ary(Obe, ArrayRef),
+    Str(Obe, Vec<String>),
+    List(Obe, Vec<Obj>),
+    Expr(Obe, Vec<Obj>),
+
+    // Special functions. eg. operators, sin, log etc.
+    // Design question: Should these be enums?
+    Special(Obe, String),
+    Builtin(Obe, String),
+
+    // Special values.
+    Nil(Obe),
+    Global(Obe),
+    Unbound(Obe),
+    MissingArg(Obe),
+    BaseNamespace(Obe),
+    EmptyEnv(Obe),
+    BaseEnv(Obe),
+}
 
 pub const NA_INTEGER : i32 = -0x80000000;
 // Note there is no current way to do this in Rust that I know of.
@@ -73,54 +111,348 @@ pub struct Env {
 
 pub type Obe = Option<Box<Extras>>;
 
-/// An idiomatic representation of an R object.
-#[derive(PartialEq, Clone)]
-pub enum Obj {
-    // Sym and Env can have muliple references to the same object.
-    Sym(Obe, Arc<Symbol>),
-    Env(Obe, Arc<Env>),
 
-    // Pair lists are lisp-style car/cdr pairs of symbol + object.
-    // Design question: should these be structures like Sym and Env?
-    PairList(Obe, Vec<(Obj, Obj)>),
-    Closure(Obe, Vec<(Obj, Obj)>),
-    Promise(Obe, Vec<(Obj, Obj)>),
-    Lang(Obe, Vec<(Obj, Obj)>),
-    Dot(Obe, Vec<(Obj, Obj)>),
+#[derive(PartialEq, Debug, Clone)]
+pub enum Type {
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+}
 
-    // These are vectors.
-    // Design question: Should these be Arcs?
-    Char(Obe, String),
-    Logical(Obe, Vec<bool>),
-    Int(Obe, Vec<i32>),
-    Real(Obe, Vec<f64>),
-    Cplx(Obe, Vec<(f64, f64)>),
-    Str(Obe, Vec<String>),
-    List(Obe, Vec<Obj>),
-    Expr(Obe, Vec<Obj>),
-    Raw(Obe, Vec<u8>),
+macro_rules! make_type {
+    ($t: ty, $id: ident) => {
+        // Get an ArrayRef from a slice
+        impl From<&[$t]> for ArrayRef {
+            fn from(val: &[$t]) -> ArrayRef {
+                ArrayRef(Arc::new(PrimArray::<$t>{ data: Vec::from(val), elem_type: Type::$id }))
+            }
+        }
 
-    // Special functions. eg. operators, sin, log etc.
-    // Design question: Should these be enums?
-    Special(Obe, String),
-    Builtin(Obe, String),
+        // Get an Obj from a slice
+        impl From<&[$t]> for Obj {
+            fn from(val: &[$t]) -> Obj {
+                Obj::Ary(None, ArrayRef::from(val))
+            }
+        }
 
-    // Yet to be done.
-    /*Bytecode(Obe),
-    ExtPtr(Obe),
-    WeakRef(Obe),
-    S4(Obe),
-    New(Obe),
-    Free(Obe),*/
+        // Get an Obj from a vector
+        impl From<Vec<$t>> for Obj {
+            fn from(val: Vec<$t>) -> Obj {
+                Obj::Ary(None, ArrayRef::from(val.as_slice()))
+            }
+        }
+    }
+}
 
-    // Special values.
-    Nil(Obe),
-    Global(Obe),
-    Unbound(Obe),
-    MissingArg(Obe),
-    BaseNamespace(Obe),
-    EmptyEnv(Obe),
-    BaseEnv(Obe),
+make_type!(bool, Bool);
+make_type!(i8, I8);
+make_type!(i16, I16);
+make_type!(i32, I32);
+make_type!(i64, I64);
+make_type!(u8, U8);
+make_type!(u16, U16);
+make_type!(u32, U32);
+make_type!(u64, U64);
+make_type!(f32, F32);
+make_type!(f64, F64);
+
+// A bucket of bits on the heap.
+struct PrimArray<T> {
+    data: Vec<T>,
+    elem_type: Type,
+}
+
+struct _StringArray<'a> {
+    data: Vec<&'a str>,
+    len: usize,
+    elem_type: Type,
+    text: Vec<u8>,
+}
+
+struct _BoolArray {
+    data: Vec<u8>,
+    len: usize,
+    elem_type: Type,
+    nulls: Vec<u8>,
+}
+
+// An arbitrary vector of elements.
+// This could be heap allocated, memory mapped, RDMA shared or some other source of bytes
+// such as apache arrow.
+pub trait Array {
+    // Use this to dynamically downcast the Array.
+    fn as_any(&self) -> &dyn Any;
+
+    // Number of elements
+    fn len(&self) -> usize;
+
+    // Type of the contained element
+    fn elem_type(&self) -> Type;
+
+    // Return a pointer to the data or NULL if unavailable.
+    fn as_ptr(&self) -> * const u8;
+
+    // Return a writable pointer to the data or NULL if unavailable.
+    fn as_mut_ptr(&mut self) -> * mut u8;
+}
+
+impl<T : 'static> Array for PrimArray<T> {
+    fn as_any(&self) -> &dyn Any {
+        self as &dyn Any
+    }
+    
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn elem_type(&self) -> Type {
+        self.elem_type.clone()
+    }
+
+    fn as_ptr(&self) -> * const u8 {
+        self.data.as_ptr() as * const u8
+    }
+
+    fn as_mut_ptr(&mut self) -> * mut u8 {
+        self.data.as_mut_ptr() as * mut u8
+    }
+ }
+
+#[derive(Clone)]
+pub struct ArrayRef(Arc<dyn Array>);
+
+impl PartialEq for ArrayRef {
+    fn eq(&self, other: &ArrayRef) -> bool {
+        // TODO: check elements
+        self.elem_type() == other.elem_type() && self.len() == other.len()
+    }
+}
+
+// This will expose the Array interface to ArrayRef.
+impl std::ops::Deref for ArrayRef {
+    type Target = dyn Array;
+
+    fn deref(&self) -> &Self::Target {
+        return self.0.deref();
+    }
+}
+
+impl std::fmt::Debug for ArrayRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ArrayRef[{} x {:?}]", self.len(), self.elem_type())?;
+        Ok(())
+    }
+}
+
+// Call a function with a template parameter of the correct type
+// for an ArrayRef.
+#[macro_export]
+macro_rules! do_typed {
+    ($f : ident, $a : expr) => {
+        match $a.elem_type() {
+            Type::Bool => $f::<bool>($a),
+            Type::I8 => $f::<i8>($a),
+            Type::I16 => $f::<i16>($a),
+            Type::I32 => $f::<i32>($a),
+            Type::I64 => $f::<i64>($a),
+            Type::U8 => $f::<u8>($a),
+            Type::U16 => $f::<u16>($a),
+            Type::U32 => $f::<u32>($a),
+            Type::U64 => $f::<u64>($a),
+            Type::F32 => $f::<f32>($a),
+            Type::F64 => $f::<f64>($a),
+        }
+    }
+}
+
+impl ArrayRef {
+    pub fn as_slice<T>(&self) -> Option<&[T]> {
+        let ptr = self.0.as_ptr() as * const T;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts(ptr, self.0.len()) })
+        }
+    }
+
+    /*pub fn as_mut_slice<T>(&mut self) -> Option<&mut [T]> {
+        let ptr = self.as_mut_ptr() as * mut T;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts_mut(ptr, self.0.len()) })
+        }
+    }*/
+
+}
+
+
+// Conversion
+impl From<()> for Obj {
+    fn from(_: ()) -> Obj {
+       Obj::Nil(None)
+    }
+}
+
+impl From<&String> for Obj {
+    fn from(val: &String) -> Obj {
+       Obj::Str(None, vec![val.clone()])
+    }
+}
+
+impl From<String> for Obj {
+    fn from(val: String) -> Obj {
+       Obj::Str(None, vec![val])
+    }
+}
+
+impl From<&str> for Obj {
+    fn from(val: &str) -> Obj {
+       Obj::Str(None, vec![val.to_string()])
+    }
+}
+
+impl From<&[&str]> for Obj {
+    fn from(val: &[&str]) -> Obj {
+        let strings : Vec<_> = val.iter().map(|s| s.to_string()).collect();
+        Obj::Str(None, strings)
+    }
+}
+
+impl From<Vec<&str>> for Obj {
+    fn from(val: Vec<&str>) -> Obj {
+        let strings : Vec<_> = val.iter().map(|s| s.to_string()).collect();
+        Obj::Str(None, strings)
+    }
+}
+
+impl From<Vec<(Obj, Obj)>> for Obj {
+    fn from(val: Vec<(Obj, Obj)>) -> Obj {
+       Obj::PairList(None, val)
+    }
+}
+
+impl From<Vec<Obj>> for Obj {
+    fn from(val: Vec<Obj>) -> Obj {
+       Obj::List(None, val)
+    }
+}
+
+impl From<bool> for Obj {
+    fn from(val: bool) -> Obj {
+        Obj::from(vec![val])
+    }
+}
+
+impl From<i32> for Obj {
+    fn from(val: i32) -> Obj {
+        Obj::from(vec![val])
+    }
+}
+
+impl From<f64> for Obj {
+    fn from(val: f64) -> Obj {
+        Obj::from(vec![val])
+    }
+}
+
+impl PartialEq<&str> for Obj {
+    fn eq(&self, rhs: &&str) -> bool {
+        if let Obj::Str(_, ref val) = self {
+            val.len() == 1 && &val[0] == rhs
+        } else {
+            false
+        }
+    }
+}
+
+pub trait ToChars {
+    fn to_chars(&self, v: &mut Vec<u8>);
+}
+
+macro_rules! to_chars {
+    ($t : ty) => {
+        impl ToChars for $t {
+            fn to_chars(&self, v: &mut Vec<u8>) {
+                v.extend(self.to_string().as_bytes());
+                v.push(b'L');
+            }
+        }
+    }
+}
+
+to_chars!(i8);
+to_chars!(i16);
+to_chars!(i64);
+to_chars!(u8);
+to_chars!(u16);
+to_chars!(u32);
+to_chars!(u64);
+to_chars!(f32);
+
+impl ToChars for i32 {
+    fn to_chars(&self, v: &mut Vec<u8>) {
+        if self == &NA_INTEGER {
+            v.extend(b"NA");
+        } else {
+            // TODO: use itoa
+            v.extend(self.to_string().as_bytes());
+            v.push(b'L');
+        }
+    }
+}
+
+impl ToChars for f64 {
+    fn to_chars(&self, v: &mut Vec<u8>) {
+        match self.to_bits() {
+            0x7ff00000000007a2 => {
+                v.extend(b"NA");
+            }
+            0x7ff0000000000001 | 0x7ff8000000000000 => {
+                v.extend(b"Nan");
+            }
+            0x7ff0000000000000 => {
+                v.extend(b"Inf");
+            }
+            0xfff0000000000000 => {
+                v.extend(b"-Inf");
+            }
+            _ => {
+                v.extend(self.to_string().as_bytes());
+            }
+        }
+    }
+}
+
+impl ToChars for String {
+    fn to_chars(&self, v: &mut Vec<u8>) {
+        v.push(b'\"');
+        for ch in self.bytes() {
+            // TODO: do escapes
+            v.push(ch);
+        }
+        v.push(b'\"');
+    }
+}
+
+impl ToChars for Obj {
+    fn to_chars(&self, v: &mut Vec<u8>) {
+        v.extend(b"list");
+    }
+}
+
+impl ToChars for bool {
+    fn to_chars(&self, v: &mut Vec<u8>) {
+        if *self {v.extend(b"TRUE")} else {v.extend(b"FALSE")}
+    }
 }
 
 impl std::fmt::Debug for Obj {
@@ -139,15 +471,11 @@ impl std::fmt::Debug for Obj {
             Obj::Dot(_, ref val) => write!(f, "Dot({:?})", val),
             Obj::Special(_, ref val) => write!(f, "Special({:?})", val),
             Obj::Builtin(_, ref val) => write!(f, "Builtin({:?})", val),
+            Obj::Ary(_, ref val) => write!(f, "Ary({:?})", val),
             Obj::Char(_, ref val) => write!(f, "Char({:?})", val),
-            Obj::Logical(_, ref val) => write!(f, "Logical({:?})", val),
-            Obj::Int(_, ref val) => write!(f, "Int({:?})", val),
-            Obj::Real(_, ref val) => write!(f, "Real({:?})", val),
-            Obj::Cplx(_, ref val) => write!(f, "Cplx({:?})", val),
             Obj::Str(_, ref val) => write!(f, "Str({:?})", val),
             Obj::List(_, ref val) => write!(f, "Obj({:?})", val),
             Obj::Expr(_, ref val) => write!(f, "Expr({:?})", val),
-            Obj::Raw(_, ref val) => write!(f, "Raw({:?})", val),
             Obj::Nil(_) => write!(f, "Nil()"),
             Obj::Global(_) => write!(f, "Global()"),
             Obj::Unbound(_) => write!(f, "Unbound()"),
@@ -196,41 +524,8 @@ impl Obj {
         Obj::Char(None, chrs.to_string())
     }
 
-    pub fn strings(strs: Vec<&str>) -> Self {
-        Obj::Str(
-            None,
-            strs.into_iter()
-                .map(|s| s.to_string())
-                .collect(),
-        )
-    }
-
-    pub fn string(s: &str) -> Self {
-        Obj::Str(None, vec![s.to_string()])
-    }
-
     pub fn sym(chrs: &str) -> Self {
         Obj::Sym(None, Arc::new(Symbol { name: chrs.to_string() }))
-    }
-
-    pub fn real(vals: Vec<f64>) -> Self {
-        Obj::Real(None, vals)
-    }
-
-    pub fn integer(vals: Vec<i32>) -> Self {
-        Obj::Int(None, vals)
-    }
-
-    pub fn vec(vals: Vec<Obj>) -> Self {
-        Obj::List(None, vals)
-    }
-
-    pub fn raw(vals: Vec<u8>) -> Self {
-        Obj::Raw(None, vals)
-    }
-
-    pub fn func() -> Self {
-        Obj::null()
     }
 
     pub fn lang(vals: Vec<Obj>) -> Self {
@@ -269,14 +564,10 @@ impl Obj {
             | Obj::Special(ref mut obe, _)
             | Obj::Builtin(ref mut obe, _)
             | Obj::Char(ref mut obe, _)
-            | Obj::Logical(ref mut obe, _)
-            | Obj::Int(ref mut obe, _)
-            | Obj::Real(ref mut obe, _)
-            | Obj::Cplx(ref mut obe, _)
+            | Obj::Ary(ref mut obe, _)
             | Obj::Str(ref mut obe, _)
             | Obj::List(ref mut obe, _)
             | Obj::Expr(ref mut obe, _)
-            | Obj::Raw(ref mut obe, _)
             | Obj::Nil(ref mut obe)
             | Obj::Global(ref mut obe)
             | Obj::Unbound(ref mut obe)
@@ -299,14 +590,10 @@ impl Obj {
             | Obj::Special(ref obe, _)
             | Obj::Builtin(ref obe, _)
             | Obj::Char(ref obe, _)
-            | Obj::Logical(ref obe, _)
-            | Obj::Int(ref obe, _)
-            | Obj::Real(ref obe, _)
-            | Obj::Cplx(ref obe, _)
+            | Obj::Ary(ref obe, _)
             | Obj::Str(ref obe, _)
             | Obj::List(ref obe, _)
             | Obj::Expr(ref obe, _)
-            | Obj::Raw(ref obe, _)
             | Obj::Nil(ref obe)
             | Obj::Global(ref obe)
             | Obj::Unbound(ref obe)
@@ -349,24 +636,20 @@ impl Obj {
     pub fn data_frame(columns: Vec<Obj>, names: Vec<&str>) -> Self {
         let cmax = columns.iter().map(|c| c.len()).max().unwrap_or(1);
         let n: i32 = i32::from_usize(cmax).unwrap_or(1);
-        let mut res = Obj::vec(columns);
-        res.add_attr("names", Obj::strings(names));
-        res.add_attr("row.names", Obj::integer(vec![-2147483648, -(n as i32)]));
-        res.add_attr("class", Obj::strings(vec!["data.frame"]));
+        let mut res = Obj::List(None, columns);
+        res.add_attr("names", Obj::from(names));
+        res.add_attr("row.names", Obj::from(vec![-2147483648, -(n as i32)]));
+        res.add_attr("class", Obj::from(vec!["data.frame"]));
         res.set_is_obj(true);
         res
     }
 
     pub fn len(&self) -> usize {
         match self {
-            Obj::Logical(_, vec) => vec.len(),
-            Obj::Int(_, vec) => vec.len(),
-            Obj::Real(_, vec) => vec.len(),
-            Obj::Cplx(_, vec) => vec.len(),
+            Obj::Ary(_, ary) => ary.len(),
             Obj::Str(_, vec) => vec.len(),
             Obj::List(_, vec) => vec.len(),
             Obj::Expr(_, vec) => vec.len(),
-            Obj::Raw(_, vec) => vec.len(),
             _ => 0,
         }
     }

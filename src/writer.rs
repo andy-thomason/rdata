@@ -2,6 +2,7 @@
 use std::io::Write;
 
 use crate::{Obj, Result, Obe, Extras, Error, Symbol, Env};
+use crate::obj::{Type, ArrayRef};
 
 pub struct WriteOptions {
     is_ascii: bool,
@@ -252,46 +253,6 @@ impl<W : Write> Writer<W> {
         self.string(val)
     }
 
-    // Write an integer or logical vector.
-    fn write_int<T>(&mut self, obe: &Obe, val: &Vec<T>, t: i32) -> Result<()>
-    where T: ToI32
-    {
-        self.write_flags(&obe, t)?;
-        let len32 = val.len() as i32;
-        if len32 as usize != val.len() { return Err(Error::from("vector too long for R format")); }
-        self.integer(len32)?;
-        for i in val {
-            self.integer(i.to_i32())?;
-        }
-        self.write_attr(&obe)
-    }
-
-    // Write a floating point vector.
-    fn write_real(&mut self, obe: &Obe, val: &Vec<f64>) -> Result<()> {
-        self.write_flags(&obe, 14)?;
-        let len32 = val.len() as i32;
-        if len32 as usize != val.len() { return Err(Error::from("vector too long for R format")); }
-        self.integer(len32)?;
-        // TODO: write more directly for binary
-        for &i in val {
-            self.real(i)?;
-        }
-        self.write_attr(&obe)
-    }
-
-    // Write a complex vector.
-    fn write_cplx(&mut self, obe: &Obe, val: &Vec<(f64, f64)>) -> Result<()> {
-        self.write_flags(&obe, 15)?;
-        let len32 = val.len() as i32;
-        if len32 as usize != val.len() { return Err(Error::from("vector too long for R format")); }
-        self.integer(len32)?;
-        for &i in val {
-            self.real(i.0)?;
-            self.real(i.1)?;
-        }
-        self.write_attr(&obe)
-    }
-
     // Write a vector of objects.
     fn write_obj(&mut self, obe: &Obe, val: &Vec<Obj>, t: i32) -> Result<()> {
         self.write_flags(&obe, t)?;
@@ -317,20 +278,49 @@ impl<W : Write> Writer<W> {
         self.write_attr(&obe)
     }
 
-    // Write a raw object.
-    fn write_raw(&mut self, obe: &Obe, val: &Vec<u8>) -> Result<()> {
-        self.write_flags(&obe, 24)?;
+    fn write_ary(&mut self, obe: &Obe, val: &ArrayRef) -> Result<()> {
         let len32 = val.len() as i32;
         if len32 as usize != val.len() { return Err(Error::from("vector too long for R format")); }
-        self.integer(len32)?;
-        if self.opt.is_ascii_stream {
-            for byte in val {
-                self.dest.write(&format!("{:02x}\n", byte).as_bytes())?;
+        match val.elem_type() {
+            Type::Bool => {
+                self.write_flags(&obe, 10)?;
+                self.integer(len32)?;
+                let val = val.as_slice::<bool>().unwrap();
+                for i in val {
+                    self.integer(if *i {1} else {0})?;
+                }
             }
-        } else {
-            self.dest.write(val.as_slice())?;
-        }
-        Ok(())
+            Type::U8 => {
+                self.write_flags(&obe, 24)?;
+                self.integer(len32)?;
+                let val = val.as_slice::<u8>().unwrap();
+                if self.opt.is_ascii_stream {
+                    for byte in val {
+                        self.dest.write(&format!("{:02x}\n", byte).as_bytes())?;
+                    }
+                } else {
+                    self.dest.write(val)?;
+                }
+            }
+            Type::I32 => {
+                self.write_flags(&obe, 13)?;
+                self.integer(len32)?;
+                let val = val.as_slice::<i32>().unwrap();
+                for i in val {
+                    self.integer(i.to_i32())?;
+                }
+            }
+            Type::F64 => {
+                self.write_flags(&obe, 14)?;
+                self.integer(len32)?;
+                let val = val.as_slice::<f64>().unwrap();
+                for i in val {
+                    self.real(*i)?;
+                }
+            }
+            _ => return Err(Error::from(format!("{:?} no supported for write", val.elem_type())))
+        };
+        self.write_attr(&obe)
     }
 
     // Write any object.
@@ -346,14 +336,10 @@ impl<W : Write> Writer<W> {
             Obj::Special(ref obe, ref val) => self.write_char(obe, val, 7),
             Obj::Builtin(ref obe, ref val) => self.write_char(obe, val, 8),
             Obj::Char(ref obe, ref val) => self.write_char(obe, val, Self::get_char_flags(val)),
-            Obj::Logical(ref obe, ref val) => self.write_int(obe, val, 10),
-            Obj::Int(ref obe, ref val) => self.write_int(obe, val, 13),
-            Obj::Real(ref obe, ref val) => self.write_real(obe, val),
-            Obj::Cplx(ref obe, ref val) => self.write_cplx(obe, val),
+          | Obj::Ary(ref obe, ref val) => self.write_ary(obe, val),
             Obj::Str(ref obe, ref val) => self.write_str(obe, val, 16),
             Obj::List(ref obe, ref val) => self.write_obj(obe, val, 19),
             Obj::Expr(ref obe, ref val) => self.write_obj(obe, val, 20),
-            Obj::Raw(ref obe, ref val) => self.write_raw(obe, val),
             Obj::Nil(ref obe) => self.write_flags(&obe, 254),
             Obj::Global(ref obe) => self.write_flags(&obe, 253),
             Obj::Unbound(ref obe) => self.write_flags(&obe, 252),
@@ -489,7 +475,7 @@ mod tests {
     #[test]
     fn int() {
         // saveRDS(c(1L, 2L, 3L), stdout(), ascii=TRUE)
-        let obj = Obj::integer(vec![1, 2, 3]);
+        let obj = Obj::from(&[1, 2, 3] as &[i32]);
         let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n13\n3\n1\n2\n3\n");
     }
@@ -497,7 +483,7 @@ mod tests {
     #[test]
     fn real() {
         // saveRDS(c(1, 2, 3), stdout(), ascii=TRUE)
-        let obj = Obj::real(vec![1., 2., 3.]);
+        let obj = Obj::from(&[1., 2., 3.] as &[f64]);
         let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n14\n3\n1\n2\n3\n");
     }
@@ -505,7 +491,7 @@ mod tests {
     #[test]
     fn attr() {
         // saveRDS(structure(c(1, 2, 3), x=4), stdout(), ascii=TRUE)
-        let mut obj = Obj::real(vec![1., 2., 3.]);
+        let mut obj = Obj::from(&[1., 2., 3.] as &[f64]);
         obj.add_attr("x", 4.);
         let s = write_ascii(&obj, false);
         assert_eq!(s, "A\n2\n197636\n131840\n526\n3\n1\n2\n3\n1026\n1\n262153\n1\nx\n14\n1\n4\n254\n");
@@ -514,7 +500,7 @@ mod tests {
     #[test]
     fn attrx2() {
         //saveRDS(structure(c(1, 2, 3), x=4, y=5), stdout(), ascii=TRUE)
-        let mut obj = Obj::real(vec![1., 2., 3.]);
+        let mut obj = Obj::from(&[1., 2., 3.] as &[f64]);
         obj.add_attr("x", 4.);
         obj.add_attr("y", 5.);
         let s = write_ascii(&obj, false);
@@ -524,9 +510,9 @@ mod tests {
     #[test]
     fn attr_nested() {
         //saveRDS(structure(c(1, 2, 3), x=4, y=structure(5, z=6)), stdout(), ascii=TRUE)
-        let mut obj = Obj::real(vec![1., 2., 3.]);
+        let mut obj = Obj::from(&[1., 2., 3.] as &[f64]);
         obj.add_attr("x", 4.);
-        let mut y = Obj::real(vec![5.]);
+        let mut y = Obj::from(5.);
         y.add_attr("z", 6.);
         obj.add_attr("y", y);
         let s = write_ascii(&obj, false);
@@ -545,7 +531,7 @@ mod tests {
     fn data_frame() {
         //saveRDS(data.frame(a = c(1, 2)), stdout(), ascii = TRUE)
         let obj = Obj::data_frame(
-            vec![Obj::real(vec![1., 2.])],
+            vec![Obj::from(vec![1., 2.])],
             vec!["a"],
         );
         eprintln!("{:?}", &obj);
